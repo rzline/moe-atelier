@@ -313,6 +313,19 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     onStatsUpdate(type, duration);
   };
 
+  const resetTaskForGenerate = (task: SubTaskResult, startTime: number): SubTaskResult => ({
+    ...task,
+    status: 'loading',
+    error: undefined,
+    displayUrl: undefined,
+    localKey: undefined,
+    savedLocal: false,
+    startTime,
+    endTime: undefined,
+    duration: undefined,
+    retryCount: 0
+  });
+
   const handleGenerate = async () => {
     if (!config.apiKey) {
       message.error('请先配置 API Key');
@@ -326,50 +339,40 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
 
     setIsGlobalLoading(true);
 
-    // 找出非成功的任务（error 或 pending），优先复用这些任务
-    const nonSuccessTasks = results.filter(r => r.status !== 'success');
-    const tasksToReuse = nonSuccessTasks.slice(0, concurrency);
+    const startTime = Date.now();
+    const tasksToReuse = results.slice(0, concurrency);
+    const tasksToReuseIds = new Set(tasksToReuse.map(task => task.id));
     const numNewTasks = Math.max(0, concurrency - tasksToReuse.length);
     
     const newSubTasks: SubTaskResult[] = Array.from({ length: numNewTasks }).map(() => ({
       id: uuidv4(),
       status: 'loading',
       retryCount: 0,
-      startTime: Date.now(),
+      startTime,
       savedLocal: false
     }));
 
-    setResults((prev: SubTaskResult[]) => {
-      const next = [...prev];
-      
-      // 1. 插入新任务到顶部
-      if (newSubTasks.length > 0) {
-        next.unshift(...newSubTasks);
+    results.forEach(task => {
+      if (!tasksToReuseIds.has(task.id)) {
+        clearObjectUrl(task.id);
+        isRetryingRef.current.delete(task.id);
+        taskStartTimesRef.current.delete(task.id);
+      } else {
+        clearObjectUrl(task.id);
       }
+    });
 
-      // 2. 更新复用任务的状态
-      tasksToReuse.forEach(task => {
-        const index = next.findIndex(r => r.id === task.id);
-        if (index !== -1) {
-          next[index] = {
-            ...next[index],
-            status: 'loading',
-            error: undefined,
-            displayUrl: undefined,
-            localKey: undefined,
-            savedLocal: false,
-            startTime: Date.now(),
-            retryCount: 0 // 重置重试计数
-          };
-        }
-      });
-
-      return next;
+    const resetTasks = tasksToReuse.map(task => resetTaskForGenerate(task, startTime));
+    setResults(() => {
+      if (newSubTasks.length > 0) {
+        return [...newSubTasks, ...resetTasks];
+      }
+      return resetTasks;
     });
 
     // 启动所有任务（新的 + 复用的）
-    [...newSubTasks, ...tasksToReuse].forEach(task => {
-      taskStartTimesRef.current.set(task.id, Date.now());
+    [...newSubTasks, ...resetTasks].forEach(task => {
+      taskStartTimesRef.current.set(task.id, startTime);
       isRetryingRef.current.set(task.id, true);
       performRequest(task.id);
     });
