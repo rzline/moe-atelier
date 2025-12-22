@@ -11,75 +11,79 @@ import {
   LoadingOutlined,
   PlayCircleFilled
 } from '@ant-design/icons';
-import type { UploadFile } from 'antd/es/upload/interface';
+import type { RcFile, UploadFile } from 'antd/es/upload/interface';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { AppConfig } from '../App';
+import type { AppConfig } from '../types/app';
+import type { TaskStats } from '../types/stats';
+import type {
+  PersistedImageTaskState,
+  PersistedSubTaskResult,
+  SubTaskResult,
+  PersistedUploadImage,
+} from '../types/imageTask';
+import { DEFAULT_TASK_STATS, loadTaskState, saveTaskState, serializeResults, TASK_STATE_VERSION } from './imageTaskState';
+import { getBase64 } from '../utils/file';
+import { parseMarkdownImage, resolveImageFromResponse } from '../utils/imageResponse';
+import { openImageDb, IMAGE_STORE_NAME } from '../utils/imageDb';
+import { calculateSuccessRate, formatDuration } from '../utils/stats';
 
 const { Text } = Typography;
 const { TextArea } = Input;
 
 interface ImageTaskProps {
   id: string;
+  storageKey: string;
   config: AppConfig;
   onRemove: () => void;
   onStatsUpdate: (type: 'request' | 'success' | 'fail', duration?: number) => void;
 }
-
-interface SubTaskResult {
-  id: string;
-  displayUrl?: string;
-  localKey?: string;
-  savedLocal?: boolean;
-  status: 'pending' | 'loading' | 'success' | 'error';
-  error?: string;
-  retryCount: number;
-  startTime?: number;
-  endTime?: number;
-  duration?: number;
-}
-
-interface TaskStats {
-  totalRequests: number;
-  successCount: number;
-  fastestTime: number;
-  slowestTime: number;
-  totalTime: number;
-}
-
 const SUCCESS_AUDIO_SRC = 'https://actions.google.com/sounds/v1/cartoon/magic_chime.ogg'; 
-const IMAGE_DB_NAME = 'moe-image-cache';
-const IMAGE_STORE_NAME = 'images';
-const IMAGE_DB_VERSION = 1;
-const IMAGE_CACHE_TTL_MS = 30 * 60 * 1000;
 
-const openImageDb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
-  const request = indexedDB.open(IMAGE_DB_NAME, IMAGE_DB_VERSION);
-  request.onupgradeneeded = () => {
-    const db = request.result;
-    if (!db.objectStoreNames.contains(IMAGE_STORE_NAME)) {
-      db.createObjectStore(IMAGE_STORE_NAME);
-    }
+type UploadFileWithMeta = UploadFile & {
+  localKey?: string;
+  lastModified?: number;
+};
+
+const normalizeStoredResult = (item: PersistedSubTaskResult): SubTaskResult => {
+  const wasLoading = item.status === 'loading' || item.status === 'pending';
+  return {
+    id: item.id,
+    status: wasLoading ? 'error' : item.status,
+    error: wasLoading ? '刷新后已中断' : item.error,
+    retryCount: typeof item.retryCount === 'number' ? item.retryCount : 0,
+    startTime: item.startTime,
+    endTime: item.endTime,
+    duration: item.duration,
+    localKey: item.localKey,
+    sourceUrl: item.sourceUrl,
+    savedLocal: item.savedLocal,
+    displayUrl: item.localKey ? undefined : item.sourceUrl,
   };
-  request.onsuccess = () => resolve(request.result);
-  request.onerror = () => reject(request.error);
-});
+};
 
-const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpdate }: ImageTaskProps) => {
+const serializeUploads = (uploads: UploadFileWithMeta[]): PersistedUploadImage[] =>
+  uploads
+    .filter((file) => file.localKey)
+    .map((file) => ({
+      uid: file.uid,
+      name: file.name,
+      type: file.type || file.originFileObj?.type,
+      size: file.size ?? file.originFileObj?.size,
+      lastModified: file.lastModified ?? file.originFileObj?.lastModified,
+      localKey: file.localKey as string,
+    }));
+
+const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, onRemove, onStatsUpdate }: ImageTaskProps) => {
   const [prompt, setPrompt] = useState('');
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [fileList, setFileList] = useState<UploadFileWithMeta[]>([]);
   const [concurrency, setConcurrency] = useState<number>(2);
   const [enableSound, setEnableSound] = useState<boolean>(true);
   
   const [results, setResults] = useState<SubTaskResult[]>([]);
   const [isGlobalLoading, setIsGlobalLoading] = useState(false);
-  const [stats, setStats] = useState<TaskStats>({ 
-    totalRequests: 0, 
-    successCount: 0, 
-    fastestTime: 0,
-    slowestTime: 0,
-    totalTime: 0
-  });
+  const [stats, setStats] = useState<TaskStats>({ ...DEFAULT_TASK_STATS });
+  const [hydrated, setHydrated] = useState(false);
   
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const isRetryingRef = useRef<Map<string, boolean>>(new Map());
@@ -87,21 +91,87 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const dbPromiseRef = useRef<Promise<IDBDatabase> | null>(null);
   const objectUrlMapRef = useRef<Map<string, string>>(new Map());
+  const uploadKeysRef = useRef<Map<string, string>>(new Map());
+  const cachedUploadKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let isActive = true;
+    const hydrate = async () => {
+      const stored = loadTaskState(storageKey);
+      if (stored) {
+        setPrompt(stored.prompt ?? '');
+        const nextConcurrency = typeof stored.concurrency === 'number' ? stored.concurrency : 2;
+        setConcurrency(Math.min(10, Math.max(1, nextConcurrency)));
+        setEnableSound(typeof stored.enableSound === 'boolean' ? stored.enableSound : true);
+        if (stored.stats) {
+          setStats({ ...DEFAULT_TASK_STATS, ...stored.stats });
+        }
+        const storedResults = Array.isArray(stored.results) ? stored.results : [];
+        const hydratedResults: SubTaskResult[] = [];
+        for (const item of storedResults) {
+          const normalized = normalizeStoredResult(item);
+          if (normalized.localKey) {
+            const blob = await getImageBlob(normalized.localKey);
+            if (blob) {
+              const objectUrl = URL.createObjectURL(blob);
+              normalized.displayUrl = objectUrl;
+              registerObjectUrl(normalized.id, objectUrl);
+            } else if (normalized.sourceUrl) {
+              normalized.displayUrl = normalized.sourceUrl;
+            }
+          } else if (normalized.sourceUrl) {
+            normalized.displayUrl = normalized.sourceUrl;
+          }
+          hydratedResults.push(normalized);
+        }
+        if (isActive) {
+          setResults(hydratedResults);
+        }
+        const storedUploads = Array.isArray(stored.uploads) ? stored.uploads : [];
+        if (storedUploads.length > 0) {
+          const hydratedUploads: UploadFileWithMeta[] = [];
+          for (const item of storedUploads) {
+            if (!item?.localKey) continue;
+            const blob = await getImageBlob(item.localKey);
+            if (!blob) continue;
+            const rawFile = new File([blob], item.name, {
+              type: item.type || blob.type || 'application/octet-stream',
+              lastModified: item.lastModified || Date.now(),
+            });
+            const rcFile = rawFile as RcFile;
+            const objectUrl = URL.createObjectURL(blob);
+            registerObjectUrl(item.localKey, objectUrl);
+            cachedUploadKeysRef.current.add(item.localKey);
+            hydratedUploads.push({
+              uid: item.uid,
+              name: item.name,
+              status: 'done',
+              size: item.size ?? rcFile.size,
+              type: item.type ?? rcFile.type,
+              lastModified: item.lastModified ?? rcFile.lastModified,
+              originFileObj: rcFile,
+              thumbUrl: objectUrl,
+              localKey: item.localKey,
+            });
+          }
+          if (isActive) {
+            setFileList(hydratedUploads);
+          }
+        }
+      }
+      if (isActive) {
+        setHydrated(true);
+      }
+    };
+    void hydrate();
+    return () => {
+      isActive = false;
+    };
+  }, [storageKey]);
 
   useEffect(() => {
     audioRef.current = new Audio(SUCCESS_AUDIO_SRC);
-    void cleanupExpiredCache();
-    const cleanupTimer = window.setInterval(() => {
-      void cleanupExpiredCache();
-    }, IMAGE_CACHE_TTL_MS);
-    const handleBeforeUnload = () => {
-      void clearImageCache();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
-      window.clearInterval(cleanupTimer);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      void clearImageCache();
       abortControllersRef.current.forEach((controller: AbortController) => controller.abort());
       objectUrlMapRef.current.forEach((url: string) => URL.revokeObjectURL(url));
       objectUrlMapRef.current.clear();
@@ -109,12 +179,71 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     };
   }, []);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    const payload: PersistedImageTaskState = {
+      version: TASK_STATE_VERSION,
+      prompt,
+      concurrency,
+      enableSound,
+      results: serializeResults(results),
+      uploads: serializeUploads(fileList),
+      stats,
+    };
+    saveTaskState(storageKey, payload);
+  }, [prompt, concurrency, enableSound, results, stats, storageKey, hydrated, fileList]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let isActive = true;
+    const persistUploads = async () => {
+      const pending = fileList.filter(
+        (file) => file.originFileObj && file.localKey && !cachedUploadKeysRef.current.has(file.localKey),
+      );
+      if (pending.length === 0) return;
+      try {
+        await Promise.all(
+          pending.map(async (file) => {
+            const localKey = file.localKey as string;
+            await saveImageBlob(localKey, file.originFileObj as File);
+            cachedUploadKeysRef.current.add(localKey);
+          }),
+        );
+        if (!isActive) return;
+      } catch (err) {
+        console.warn('上传图片缓存失败:', err);
+      }
+    };
+    void persistUploads();
+    return () => {
+      isActive = false;
+    };
+  }, [fileList, hydrated]);
+
+  useEffect(() => {
+    const nextKeys = new Map<string, string>();
+    fileList.forEach((file) => {
+      const key = file.localKey || buildUploadKey(file.uid);
+      nextKeys.set(file.uid, key);
+    });
+    uploadKeysRef.current.forEach((key, uid) => {
+      if (!nextKeys.has(uid)) {
+        clearObjectUrl(key);
+        cachedUploadKeysRef.current.delete(key);
+        void deleteImageBlob(key);
+      }
+    });
+    uploadKeysRef.current = nextKeys;
+  }, [fileList]);
+
   const playSuccessSound = () => {
     if (enableSound && audioRef.current) {
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch((e: any) => console.error('Error playing sound:', e));
     }
   };
+
+  const buildUploadKey = (uid: string) => `${storageKey}:upload:${uid}`;
 
   const getImageDb = () => {
     if (typeof indexedDB === 'undefined') return null;
@@ -131,46 +260,46 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     await new Promise<void>((resolve, reject) => {
       const now = Date.now();
       const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite');
-      tx.objectStore(IMAGE_STORE_NAME).put({ blob, createdAt: now, expiresAt: now + IMAGE_CACHE_TTL_MS }, key);
+      tx.objectStore(IMAGE_STORE_NAME).put({ blob, createdAt: now }, key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
   };
 
-  const cleanupExpiredCache = async () => {
+  const getImageBlob = async (key: string): Promise<Blob | null> => {
     const dbPromise = getImageDb();
-    if (!dbPromise) return;
+    if (!dbPromise) return null;
     const db = await dbPromise;
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<Blob | null>((resolve) => {
       const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite');
       const store = tx.objectStore(IMAGE_STORE_NAME);
-      const request = store.openCursor();
-      const now = Date.now();
+      const request = store.get(key);
       request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) return;
-        const value = cursor.value as any;
-        const expiresAt = value?.expiresAt;
-        if (typeof expiresAt !== 'number' || expiresAt <= now) {
-          cursor.delete();
+        const value = request.result as { blob?: Blob } | undefined;
+        if (!value?.blob) {
+          resolve(null);
+          return;
         }
-        cursor.continue();
+        resolve(value.blob);
       };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      request.onerror = () => resolve(null);
     });
   };
 
-  const clearImageCache = async () => {
+  const deleteImageBlob = async (key: string) => {
     const dbPromise = getImageDb();
     if (!dbPromise) return;
-    const db = await dbPromise;
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite');
-      tx.objectStore(IMAGE_STORE_NAME).clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    try {
+      const db = await dbPromise;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite');
+        tx.objectStore(IMAGE_STORE_NAME).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (err) {
+      console.warn('Failed to remove cached image:', err);
+    }
   };
 
   const registerObjectUrl = (key: string, url: string) => {
@@ -230,57 +359,6 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     }
   };
 
-  const getBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = (error) => reject(error);
-    });
-
-  const parseMarkdownImage = (text: string): string | null => {
-    const mdImageRegex = /!\[.*?\]\((.*?)\)/;
-    const match = text.match(mdImageRegex);
-    if (match && match[1]) return match[1];
-    if (text.startsWith('http') || text.startsWith('data:image')) return text;
-    return null;
-  };
-
-  const extractImageFromMessage = (message: any): string | null => {
-    if (!message) return null;
-    if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if (part?.type === 'image_url') {
-          const url = part?.image_url?.url || part?.image_url;
-          if (url) return url;
-        }
-        if (part?.type === 'text' && typeof part.text === 'string') {
-          const imageUrl = parseMarkdownImage(part.text);
-          if (imageUrl) return imageUrl;
-        }
-      }
-    }
-    if (typeof message.content === 'string') {
-      const imageUrl = parseMarkdownImage(message.content);
-      if (imageUrl) return imageUrl;
-    }
-    if (typeof message.reasoning_content === 'string') {
-      const imageUrl = parseMarkdownImage(message.reasoning_content);
-      if (imageUrl) return imageUrl;
-    }
-    return null;
-  };
-
-  const resolveImageFromResponse = (data: any): string | null => {
-    const fromDataArray = data?.data?.[0];
-    if (fromDataArray) {
-      if (typeof fromDataArray === 'string') return fromDataArray;
-      if (fromDataArray.url) return fromDataArray.url;
-      if (fromDataArray.b64_json) return `data:image/png;base64,${fromDataArray.b64_json}`;
-    }
-    return extractImageFromMessage(data?.choices?.[0]?.message);
-  };
-
   const updateResult = (id: string, updates: Partial<SubTaskResult>) => {
     setResults((prev: SubTaskResult[]) => prev.map((r: SubTaskResult) => {
       if (r.id !== id) return r;
@@ -319,6 +397,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     error: undefined,
     displayUrl: undefined,
     localKey: undefined,
+    sourceUrl: undefined,
     savedLocal: false,
     startTime,
     endTime: undefined,
@@ -379,7 +458,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
   };
 
   const handleRetrySingle = (subTaskId: string) => {
-    updateResult(subTaskId, { status: 'loading', error: undefined, displayUrl: undefined, localKey: undefined, savedLocal: false, startTime: Date.now() });
+    updateResult(subTaskId, { status: 'loading', error: undefined, displayUrl: undefined, localKey: undefined, sourceUrl: undefined, savedLocal: false, startTime: Date.now() });
     taskStartTimesRef.current.set(subTaskId, Date.now());
     isRetryingRef.current.set(subTaskId, true);
     performRequest(subTaskId);
@@ -481,7 +560,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
         const endTime = Date.now();
         const duration = endTime - startTime;
         const { displayUrl, localKey } = await persistImageLocally(imageUrl, subTaskId);
-        updateResult(subTaskId, { status: 'success', displayUrl, localKey, savedLocal: false, endTime, duration });
+        updateResult(subTaskId, { status: 'success', displayUrl, localKey, sourceUrl: imageUrl, savedLocal: false, endTime, duration });
         updateStats('success', duration);
         playSuccessSound();
         isRetryingRef.current.set(subTaskId, false);
@@ -537,29 +616,44 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
     setIsGlobalLoading(false);
   };
 
-  const handleUploadChange = ({ fileList: newFileList }: any) => {
-    setFileList(newFileList);
+  const handleUploadChange = ({ fileList: newFileList }: { fileList: UploadFile[] }) => {
+    const normalized = newFileList.map((file) => {
+      const next = { ...file, originFileObj: file.originFileObj } as UploadFileWithMeta;
+      if (file.originFileObj && !next.originFileObj) {
+        next.originFileObj = file.originFileObj;
+      }
+      if (!next.localKey) {
+        next.localKey = buildUploadKey(next.uid);
+      }
+      if (!next.thumbUrl && next.originFileObj) {
+        const objectUrl = URL.createObjectURL(next.originFileObj);
+        registerObjectUrl(next.localKey, objectUrl);
+        next.thumbUrl = objectUrl;
+      }
+      if (next.originFileObj) {
+        next.type = next.type || next.originFileObj.type;
+        next.size = next.size ?? next.originFileObj.size;
+        next.lastModified = next.lastModified ?? next.originFileObj.lastModified;
+      }
+      if (!next.status) {
+        next.status = 'done';
+      }
+      return next;
+    });
+    setFileList(normalized);
   };
 
-  const successRate = stats.totalRequests > 0 
-    ? Math.round((stats.successCount / stats.totalRequests) * 100) 
-    : 0;
-
-  const formatTime = (ms: number) => {
-    if (ms === 0) return '0.0s';
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = (seconds % 60).toFixed(1);
-    return `${mins}m ${secs}s`;
-  };
+  const successRate = calculateSuccessRate(
+    stats.totalRequests,
+    stats.successCount,
+  );
 
   const averageTime = stats.successCount > 0 
-    ? formatTime(stats.totalTime / stats.successCount)
+    ? formatDuration(stats.totalTime / stats.successCount)
     : '0.0s';
   
-  const fastestTimeStr = formatTime(stats.fastestTime);
-  const slowestTimeStr = formatTime(stats.slowestTime);
+  const fastestTimeStr = formatDuration(stats.fastestTime);
+  const slowestTimeStr = formatDuration(stats.slowestTime);
 
   return (
     <div className="moe-card" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -670,7 +764,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
               {fileList.map((file, index) => (
                 <div key={file.uid} style={{ position: 'relative', width: 60, height: 60 }}>
                   <Image
-                    src={file.thumbUrl || (file.originFileObj ? URL.createObjectURL(file.originFileObj) : '')} 
+                    src={file.thumbUrl || ''} 
                     alt="preview" 
                     style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 8 }}
                     width={60}
@@ -844,7 +938,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, config, onRemove, onStatsUpda
                             backdropFilter: 'blur(4px)',
                             zIndex: 2
                           }}>
-                            {formatTime(result.duration)}
+                            {formatDuration(result.duration)}
                           </div>
                         )}
                         <div style={{

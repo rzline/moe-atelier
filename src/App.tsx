@@ -15,51 +15,55 @@ import {
 } from '@ant-design/icons';
 import { v4 as uuidv4 } from 'uuid';
 import ImageTask from './components/ImageTask';
+import type { AppConfig, TaskConfig } from './types/app';
+import type { GlobalStats } from './types/stats';
+import {
+  cleanupTaskCache,
+  getTaskStorageKey,
+  loadConfig,
+  loadGlobalStats,
+  loadTasks,
+  STORAGE_KEYS,
+} from './app/storage';
+import { safeStorageSet } from './utils/storage';
+import { calculateSuccessRate, formatDuration } from './utils/stats';
 
 const { Header, Content } = Layout;
 const { Title, Text } = Typography;
 
-export interface AppConfig {
-  apiUrl: string;
-  apiKey: string;
-  model: string;
-  stream: boolean;
-}
-
-export interface TaskConfig {
-  id: string;
-  prompt: string;
-  imageUrl?: string;
-}
-
-export interface GlobalStats {
-  totalRequests: number;
-  successCount: number;
-  fastestTime: number;
-  slowestTime: number;
-  totalTime: number;
-}
-
 function App() {
-  const [config, setConfig] = useState<AppConfig>({
-    apiUrl: 'https://api.openai.com/v1',
-    apiKey: '',
-    model: '',
-    stream: false,
-  });
-
-  const [tasks, setTasks] = useState<TaskConfig[]>([{ id: uuidv4(), prompt: '' }]);
-  const [globalStats, setGlobalStats] = useState<GlobalStats>({ 
-    totalRequests: 0, 
-    successCount: 0, 
-    fastestTime: 0,
-    slowestTime: 0,
-    totalTime: 0
-  });
+  const [config, setConfig] = useState<AppConfig>(() => loadConfig());
+  const [tasks, setTasks] = useState<TaskConfig[]>(() => loadTasks());
+  const [globalStats, setGlobalStats] = useState<GlobalStats>(() => loadGlobalStats());
   const [configVisible, setConfigVisible] = useState(false);
   const [models, setModels] = useState<{label: string, value: string}[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [form] = Form.useForm();
+
+  React.useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.storage?.persist) return;
+    navigator.storage.persist().catch(() => undefined);
+  }, []);
+
+  React.useEffect(() => {
+    safeStorageSet(STORAGE_KEYS.config, JSON.stringify(config), 'app cache');
+  }, [config]);
+
+  React.useEffect(() => {
+    safeStorageSet(
+      STORAGE_KEYS.tasks,
+      JSON.stringify(tasks.map((task: TaskConfig) => task.id)),
+      'app cache',
+    );
+  }, [tasks]);
+
+  React.useEffect(() => {
+    safeStorageSet(
+      STORAGE_KEYS.globalStats,
+      JSON.stringify(globalStats),
+      'app cache',
+    );
+  }, [globalStats]);
 
   const fetchModels = async () => {
     const currentConfig = form.getFieldsValue();
@@ -116,6 +120,7 @@ function App() {
   };
 
   const handleRemoveTask = (id: string) => {
+    void cleanupTaskCache(getTaskStorageKey(id));
     setTasks(tasks.filter((t: TaskConfig) => t.id !== id));
   };
 
@@ -141,26 +146,18 @@ function App() {
     });
   }, []);
 
-  const successRate = globalStats.totalRequests > 0 
-    ? Math.round((globalStats.successCount / globalStats.totalRequests) * 100) 
-    : 0;
-
-  const formatTime = (ms: number) => {
-    if (ms === 0) return '0.0s';
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = (seconds % 60).toFixed(1);
-    return `${mins}m ${secs}s`;
-  };
+  const successRate = calculateSuccessRate(
+    globalStats.totalRequests,
+    globalStats.successCount,
+  );
   
   const averageTime = globalStats.successCount > 0 
-    ? formatTime(globalStats.totalTime / globalStats.successCount)
+    ? formatDuration(globalStats.totalTime / globalStats.successCount)
     : '0.0s';
   
-  const fastestTimeStr = formatTime(globalStats.fastestTime);
+  const fastestTimeStr = formatDuration(globalStats.fastestTime);
 
-  const slowestTimeStr = formatTime(globalStats.slowestTime);
+  const slowestTimeStr = formatDuration(globalStats.slowestTime);
 
   return (
     <ConfigProvider
@@ -363,6 +360,7 @@ function App() {
               <Col xs={24} sm={12} xl={8} key={task.id} className="fade-in-up">
                 <ImageTask
                   id={task.id}
+                  storageKey={getTaskStorageKey(task.id)}
                   config={config}
                   onRemove={() => handleRemoveTask(task.id)}
                   onStatsUpdate={updateGlobalStats}
