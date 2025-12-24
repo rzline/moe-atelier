@@ -341,6 +341,14 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, onRemove,
     }
   };
 
+  const getPreferredImageSrc = (result: SubTaskResult) => {
+    const sourceUrl = result.sourceUrl;
+    if (sourceUrl && (/^https?:\/\//i.test(sourceUrl) || sourceUrl.startsWith('data:image'))) {
+      return sourceUrl;
+    }
+    return result.displayUrl || sourceUrl;
+  };
+
   const saveImageToProject = async (result: SubTaskResult) => {
     if (!result.displayUrl || result.savedLocal) return;
     try {
@@ -918,7 +926,9 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, onRemove,
         ) : (
           <Image.PreviewGroup>
             <div className="mobile-compact-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {results.map((result: SubTaskResult) => (
+              {results.map((result: SubTaskResult) => {
+                const imageSrc = getPreferredImageSrc(result);
+                return (
                 <div key={result.id} style={{ 
                   position: 'relative', 
                   paddingTop: '100%', 
@@ -934,10 +944,10 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, onRemove,
                     alignItems: 'center',
                     justifyContent: 'center'
                   }}>
-                    {result.status === 'success' && result.displayUrl ? (
+                    {result.status === 'success' && imageSrc ? (
                       <>
                         <Image
-                          src={result.displayUrl}
+                          src={imageSrc}
                           alt="Generated"
                           style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', top: 0, left: 0 }}
                           wrapperStyle={{ width: '100%', height: '100%' }}
@@ -1076,7 +1086,8 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, onRemove,
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </Image.PreviewGroup>
         )}
