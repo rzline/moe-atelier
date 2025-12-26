@@ -39,6 +39,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { v4 as uuidv4 } from 'uuid';
 import ImageTask from './components/ImageTask';
+import PromptDrawer from './components/PromptDrawer';
 import type { AppConfig, TaskConfig } from './types/app';
 import type { GlobalStats } from './types/stats';
 import {
@@ -51,6 +52,7 @@ import {
 } from './app/storage';
 import { safeStorageSet } from './utils/storage';
 import { calculateSuccessRate, formatDuration } from './utils/stats';
+import { TASK_STATE_VERSION, saveTaskState, DEFAULT_TASK_STATS } from './components/imageTaskState';
 
 const { Header, Content } = Layout;
 const { Title, Text } = Typography;
@@ -112,6 +114,7 @@ function App() {
   const [tasks, setTasks] = useState<TaskConfig[]>(() => loadTasks());
   const [globalStats, setGlobalStats] = useState<GlobalStats>(() => loadGlobalStats());
   const [configVisible, setConfigVisible] = useState(false);
+  const [promptDrawerVisible, setPromptDrawerVisible] = useState(false);
   const [models, setModels] = useState<{label: string, value: string}[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -276,6 +279,25 @@ function App() {
     setTasks([...tasks, { id: uuidv4(), prompt: '' }]);
   };
 
+  const handleCreateTaskFromPrompt = (prompt: string) => {
+    const newTaskId = uuidv4();
+    
+    // Pre-save task state with prompt
+    const storageKey = getTaskStorageKey(newTaskId);
+    saveTaskState(storageKey, {
+      version: TASK_STATE_VERSION,
+      prompt: prompt,
+      // If we could handle image upload here we would, but for now just prompt
+      concurrency: 2,
+      enableSound: true,
+      results: [],
+      uploads: [],
+      stats: DEFAULT_TASK_STATS,
+    });
+
+    setTasks([...tasks, { id: newTaskId, prompt }]);
+  };
+
   const handleRemoveTask = (id: string) => {
     void cleanupTaskCache(getTaskStorageKey(id));
     setTasks(tasks.filter((t: TaskConfig) => t.id !== id));
@@ -345,9 +367,9 @@ function App() {
     >
       <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
         {/* 顶部导航栏 */}
-        <Header style={{ 
+        <Header className="app-header" style={{ 
           height: 72, 
-          padding: '0 24px', 
+          // padding handled in css
           display: 'flex', 
           alignItems: 'center', 
           justifyContent: 'space-between',
@@ -359,7 +381,7 @@ function App() {
           borderBottom: '1px solid rgba(255, 255, 255, 0.5)',
           boxShadow: '0 4px 20px rgba(255, 158, 181, 0.05)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
             <div className="hover-scale" style={{ 
               width: 40, 
               height: 40, 
@@ -374,13 +396,41 @@ function App() {
               <HeartFilled style={{ fontSize: 20, color: '#fff' }} />
             </div>
             <div>
-              <Title level={4} style={{ margin: 0, color: '#665555', fontWeight: 800, letterSpacing: '-0.5px', lineHeight: 1 }}>
+              <Title level={4} style={{ margin: 0, color: '#665555', fontWeight: 800, letterSpacing: '-0.5px', lineHeight: 1, whiteSpace: 'nowrap' }}>
                 萌图 <span style={{ color: '#FF9EB5' }}>工坊</span>
               </Title>
             </div>
           </div>
 
-          <Space size={12}>
+          <Space size={8} className="header-actions">
+            <Tooltip title="提示词广场">
+              <Button
+                icon={<AppstoreFilled />}
+                onClick={() => setPromptDrawerVisible(true)}
+                size="large"
+                className="mobile-hidden"
+                style={{ 
+                  background: 'rgba(255,255,255,0.6)', 
+                  border: '1px solid #FF9EB5',
+                  color: '#FF9EB5' 
+                }}
+              >
+                广场
+              </Button>
+            </Tooltip>
+              <Button
+                icon={<AppstoreFilled />}
+                onClick={() => setPromptDrawerVisible(true)}
+                size="large"
+                shape="circle"
+                className="desktop-hidden circle-icon-btn"
+                style={{ 
+                  background: 'rgba(255,255,255,0.6)', 
+                  border: '1px solid #FF9EB5',
+                  color: '#FF9EB5' 
+                }}
+            />
+            
             <Button 
               icon={<SettingFilled />} 
               onClick={() => setConfigVisible(true)}
@@ -394,7 +444,7 @@ function App() {
               onClick={() => setConfigVisible(true)}
               size="large"
               shape="circle"
-              className="desktop-hidden"
+              className="desktop-hidden circle-icon-btn"
             />
             <Button 
               type="primary" 
@@ -559,6 +609,12 @@ function App() {
           </DndContext>
         </Content>
 
+        <PromptDrawer 
+          visible={promptDrawerVisible}
+          onClose={() => setPromptDrawerVisible(false)}
+          onCreateTask={handleCreateTaskFromPrompt}
+        />
+
         {/* 配置抽屉 */}
         <Drawer
           title={
@@ -585,18 +641,19 @@ function App() {
             form={form}
           >
             <Form.Item name="apiUrl" label={<span style={{ fontWeight: 700, color: '#665555' }}>API 接口地址</span>}>
-              <Input size="large" placeholder="https://api.openai.com/v1" prefix={<ApiFilled style={{ color: '#D0C0C0' }} />} />
+              <Input size="large" placeholder="https://api.openai.com/v1" prefix={<ApiFilled style={{ color: '#FF9EB5' }} />} />
             </Form.Item>
             
             <Form.Item name="apiKey" label={<span style={{ fontWeight: 700, color: '#665555' }}>API 密钥</span>}>
-              <Input.Password size="large" placeholder="sk-..." prefix={<SafetyCertificateFilled style={{ color: '#D0C0C0' }} />} />
+              <Input.Password size="large" placeholder="sk-..." prefix={<SafetyCertificateFilled style={{ color: '#FF9EB5' }} />} />
             </Form.Item>
             
-            <Form.Item label={<span style={{ fontWeight: 700, color: '#665555' }}>模型名称</span>}>
-              <Row gutter={8}>
-                <Col flex="auto">
+            <Form.Item label={<span style={{ fontWeight: 700, color: '#665555' }}>模型名称</span>} style={{ marginBottom: 48 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ flex: 1 }}>
                   <Form.Item name="model" noStyle>
                     <AutoComplete
+                      className="model-autocomplete"
                       options={models}
                       filterOption={(inputValue, option) =>
                         option!.value.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1
@@ -607,21 +664,21 @@ function App() {
                       <Input 
                         size="large" 
                         placeholder="请输入模型名称"
-                        prefix={<ExperimentFilled style={{ color: '#D0C0C0' }} />} 
+                        prefix={<ExperimentFilled style={{ color: '#FF9EB5' }} />} 
                       />
                     </AutoComplete>
                   </Form.Item>
-                </Col>
-                <Col flex="none">
-                  <Tooltip title="获取模型列表">
-                    <Button 
-                      icon={<ReloadOutlined spin={loadingModels} />} 
-                      onClick={fetchModels}
-                      size="large"
-                    />
-                  </Tooltip>
-                </Col>
-              </Row>
+                </div>
+                <Tooltip title="获取模型列表">
+                  <Button 
+                    className="model-refresh-btn"
+                    icon={<ReloadOutlined spin={loadingModels} />} 
+                    onClick={fetchModels}
+                    size="large"
+                    shape="circle"
+                  />
+                </Tooltip>
+              </div>
             </Form.Item>
             
             <div style={{ background: '#F8F9FA', padding: '16px', borderRadius: 16, marginBottom: 24, border: '1px solid #eee' }}>

@@ -68,3 +68,6 @@ PORT=8080 npm run start
 ## 注意事项
 - 仅支持 OpenAI 兼容格式；响应中需包含 base64 或图片 URL。
 - 如果只部署静态 `dist/` 而不跑 `server.mjs`，保存图片到 `saved-images/` 的功能不可用。
+
+## 致谢
+感谢 [nanobanana-website](https://github.com/unknowlei/nanobanana-website) 提供的数据源。
