@@ -72,6 +72,10 @@ const DEFAULT_TASK_STATS = {
   totalTime: 0,
 }
 
+const MIN_CONCURRENCY = 1
+const DEFAULT_CONCURRENCY = 2
+const MAX_CONCURRENCY = Number.POSITIVE_INFINITY
+
 const BACKEND_LOG_MAX_CHARS = 800
 
 const truncateLogText = (value = '') => {
@@ -197,10 +201,13 @@ const clampNumber = (value, min, max, fallback) => {
   return Math.min(max, Math.max(min, value))
 }
 
+const normalizeConcurrency = (value, fallback = DEFAULT_CONCURRENCY) =>
+  clampNumber(value, MIN_CONCURRENCY, MAX_CONCURRENCY, fallback)
+
 const createDefaultTaskState = () => ({
   version: 1,
   prompt: '',
-  concurrency: 2,
+  concurrency: DEFAULT_CONCURRENCY,
   enableSound: true,
   results: [],
   uploads: [],
@@ -210,10 +217,61 @@ const createDefaultTaskState = () => ({
 const readJsonFile = async (filePath, fallback) => {
   try {
     const raw = await fs.promises.readFile(filePath, 'utf-8')
+    if (!raw.trim()) return fallback
     return JSON.parse(raw)
   } catch (err) {
     if (err && err.code === 'ENOENT') return fallback
+    if (err && err.name === 'SyntaxError') {
+      console.warn(`Invalid JSON file, fallback to defaults: ${filePath}`, err)
+      return fallback
+    }
     throw err
+  }
+}
+
+const writeJsonFileAtomic = async (filePath, data) => {
+  const dir = path.dirname(filePath)
+  const baseName = path.basename(filePath)
+  const payload = JSON.stringify(data, null, 2)
+  await fs.promises.mkdir(dir, { recursive: true })
+
+  let tempPath = ''
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const nonce = crypto.randomUUID()
+    tempPath = path.join(
+      dir,
+      `.${baseName}.${process.pid}.${Date.now()}.${nonce}.tmp`,
+    )
+    try {
+      await fs.promises.writeFile(tempPath, payload, { encoding: 'utf-8', flag: 'wx' })
+      break
+    } catch (err) {
+      if (err && err.code === 'EEXIST' && attempt < 2) continue
+      throw err
+    }
+  }
+
+  try {
+    await fs.promises.rename(tempPath, filePath)
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      await fs.promises.mkdir(dir, { recursive: true })
+      try {
+        await fs.promises.rename(tempPath, filePath)
+        return
+      } catch (retryErr) {
+        if (!retryErr || retryErr.code !== 'ENOENT') {
+          throw retryErr
+        }
+      }
+      await fs.promises.writeFile(filePath, payload, { encoding: 'utf-8' })
+      return
+    }
+    throw err
+  } finally {
+    if (tempPath) {
+      await fs.promises.unlink(tempPath).catch(() => undefined)
+    }
   }
 }
 
@@ -227,8 +285,7 @@ const loadBackendState = async () => {
 }
 
 const saveBackendState = async (state) => {
-  await fs.promises.mkdir(serverDataDir, { recursive: true })
-  await fs.promises.writeFile(backendStatePath, JSON.stringify(state, null, 2))
+  await writeJsonFileAtomic(backendStatePath, state)
   broadcastSseEvent('state', state)
 }
 
@@ -240,7 +297,7 @@ const loadTaskState = async (taskId) => {
   return {
     ...createDefaultTaskState(),
     ...data,
-    concurrency: clampNumber(data?.concurrency, 1, 10, 2),
+    concurrency: normalizeConcurrency(data?.concurrency),
     stats: { ...DEFAULT_TASK_STATS, ...(data?.stats || {}) },
     results: Array.isArray(data?.results) ? data.results : [],
     uploads: Array.isArray(data?.uploads) ? data.uploads : [],
@@ -248,8 +305,7 @@ const loadTaskState = async (taskId) => {
 }
 
 const saveTaskState = async (taskId, state) => {
-  await fs.promises.mkdir(backendTasksDir, { recursive: true })
-  await fs.promises.writeFile(getTaskFilePath(taskId), JSON.stringify(state, null, 2))
+  await writeJsonFileAtomic(getTaskFilePath(taskId), state)
   broadcastSseEvent('task', { taskId, state })
 }
 
@@ -353,6 +409,18 @@ const parseMarkdownImage = (text = '') => {
   return null
 }
 
+const normalizeImageUrl = (value) => {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith('http') || trimmed.startsWith('data:image')) return trimmed
+  const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/
+  if (base64Pattern.test(trimmed)) {
+    return `data:image/png;base64,${trimmed}`
+  }
+  return null
+}
+
 const extractImageFromMessage = (message) => {
   if (!message) return null
   if (Array.isArray(message.content)) {
@@ -379,10 +447,21 @@ const extractImageFromMessage = (message) => {
 }
 
 const resolveImageFromResponse = (data) => {
+  const resultUrl = data?.resultUrl ?? data?.result_url
+  if (typeof resultUrl === 'string') {
+    const normalized = normalizeImageUrl(resultUrl)
+    return normalized || resultUrl
+  }
   const fromDataArray = data?.data?.[0]
   if (fromDataArray) {
-    if (typeof fromDataArray === 'string') return fromDataArray
-    if (fromDataArray.url) return fromDataArray.url
+    if (typeof fromDataArray === 'string') {
+      const normalized = normalizeImageUrl(fromDataArray)
+      return normalized || fromDataArray
+    }
+    if (fromDataArray.url) {
+      const normalized = normalizeImageUrl(fromDataArray.url)
+      return normalized || fromDataArray.url
+    }
     if (fromDataArray.b64_json) {
       return `data:image/png;base64,${fromDataArray.b64_json}`
     }
@@ -665,8 +744,11 @@ const runSubTask = async (taskId, subTaskId) => {
     return
   }
 
-  const startTime = Date.now()
   const currentResult = taskState.results[resultIndex]
+  const startTime =
+    typeof currentResult?.startTime === 'number' && Number.isFinite(currentResult.startTime)
+      ? currentResult.startTime
+      : Date.now()
   taskState.results[resultIndex] = {
     ...currentResult,
     status: 'loading',
@@ -761,7 +843,7 @@ const startGeneration = async (taskId) => {
     abortActiveController(result.id)
     clearRetryTimer(result.id)
   })
-  const concurrency = clampNumber(taskState.concurrency, 1, 10, 2)
+  const concurrency = normalizeConcurrency(taskState.concurrency)
   const startTime = Date.now()
   taskState.results = Array.from({ length: concurrency }).map(() => ({
     id: crypto.randomUUID(),
@@ -995,7 +1077,7 @@ app.put('/api/backend/task/:id', requireBackendAuth, async (req, res) => {
     const next = {
       ...createDefaultTaskState(),
       ...payload,
-      concurrency: clampNumber(payload?.concurrency, 1, 10, 2),
+      concurrency: normalizeConcurrency(payload?.concurrency),
       stats: { ...DEFAULT_TASK_STATS, ...(payload?.stats || {}) },
       results: Array.isArray(payload?.results) ? payload.results : [],
       uploads: Array.isArray(payload?.uploads) ? payload.uploads : [],
@@ -1020,7 +1102,7 @@ app.patch('/api/backend/task/:id', requireBackendAuth, async (req, res) => {
     const next = {
       ...current,
       prompt: typeof payload.prompt === 'string' ? payload.prompt : current.prompt,
-      concurrency: clampNumber(payload?.concurrency, 1, 10, current.concurrency || 2),
+      concurrency: normalizeConcurrency(payload?.concurrency, current.concurrency || DEFAULT_CONCURRENCY),
       enableSound: typeof payload.enableSound === 'boolean' ? payload.enableSound : current.enableSound,
       uploads: Array.isArray(payload?.uploads) ? payload.uploads : current.uploads,
     }

@@ -54,6 +54,7 @@ interface ImageTaskProps {
   dragListeners?: any;
 }
 const SUCCESS_AUDIO_SRC = 'https://actions.google.com/sounds/v1/cartoon/magic_chime.ogg'; 
+const DEFAULT_CONCURRENCY = 2;
 
 type UploadFileWithMeta = UploadFile & {
   localKey?: string;
@@ -100,10 +101,16 @@ const normalizeUploadsPayload = (uploads: PersistedUploadImage[] = []) =>
     localKey: item.localKey,
   }));
 
+const normalizeConcurrency = (value: unknown, fallback = DEFAULT_CONCURRENCY) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.floor(value));
+};
+
 const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMode, onRemove, onStatsUpdate, dragAttributes, dragListeners }: ImageTaskProps) => {
   const [prompt, setPrompt] = useState('');
   const [fileList, setFileList] = useState<UploadFileWithMeta[]>([]);
-  const [concurrency, setConcurrency] = useState<number>(2);
+  const [concurrency, setConcurrency] = useState<number>(DEFAULT_CONCURRENCY);
+  const [concurrencyInput, setConcurrencyInput] = useState<string>(String(DEFAULT_CONCURRENCY));
   const [enableSound, setEnableSound] = useState<boolean>(true);
   
   const [results, setResults] = useState<SubTaskResult[]>([]);
@@ -149,18 +156,19 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
     options: { preserveUploads?: boolean } = {},
   ) => {
     const nextPrompt = stored.prompt ?? '';
-    const nextConcurrency = typeof stored.concurrency === 'number' ? stored.concurrency : 2;
+    const nextConcurrency = normalizeConcurrency(stored.concurrency, DEFAULT_CONCURRENCY);
     const nextEnableSound = typeof stored.enableSound === 'boolean' ? stored.enableSound : true;
     const storedUploads = Array.isArray(stored.uploads) ? stored.uploads : [];
     backendLastPayloadRef.current = JSON.stringify({
       prompt: nextPrompt,
-      concurrency: Math.min(10, Math.max(1, nextConcurrency)),
+      concurrency: nextConcurrency,
       enableSound: nextEnableSound,
       uploads: normalizeUploadsPayload(storedUploads),
     });
 
     setPrompt(nextPrompt);
-    setConcurrency(Math.min(10, Math.max(1, nextConcurrency)));
+    setConcurrency(nextConcurrency);
+    setConcurrencyInput(String(nextConcurrency));
     setEnableSound(nextEnableSound);
     setStats({ ...DEFAULT_TASK_STATS, ...(stored.stats || {}) });
 
@@ -216,8 +224,9 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
       const stored = loadTaskState(storageKey);
       if (stored) {
         setPrompt(stored.prompt ?? '');
-        const nextConcurrency = typeof stored.concurrency === 'number' ? stored.concurrency : 2;
-        setConcurrency(Math.min(10, Math.max(1, nextConcurrency)));
+        const nextConcurrency = normalizeConcurrency(stored.concurrency, DEFAULT_CONCURRENCY);
+        setConcurrency(nextConcurrency);
+        setConcurrencyInput(String(nextConcurrency));
         setEnableSound(typeof stored.enableSound === 'boolean' ? stored.enableSound : true);
         setStats({ ...DEFAULT_TASK_STATS, ...(stored.stats || {}) });
         const storedResults = Array.isArray(stored.results) ? stored.results : [];
@@ -420,6 +429,38 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
     if (enableSound && audioRef.current) {
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch((e: any) => console.error('Error playing sound:', e));
+    }
+  };
+
+  const handleConcurrencyInputChange = (value: string) => {
+    if (value === '') {
+      setConcurrencyInput('');
+      return;
+    }
+    if (!/^\d+$/.test(value)) return;
+    const parsed = Number(value);
+    const normalized = Math.max(1, parsed);
+    setConcurrencyInput(value);
+    setConcurrency(normalized);
+  };
+
+  const handleConcurrencyInputBlur = () => {
+    if (concurrencyInput === '') {
+      setConcurrencyInput(String(concurrency));
+      return;
+    }
+    if (!/^\d+$/.test(concurrencyInput)) {
+      setConcurrencyInput(String(concurrency));
+      return;
+    }
+    const parsed = Number(concurrencyInput);
+    const normalized = Math.max(1, parsed);
+    const normalizedValue = String(normalized);
+    if (normalizedValue !== concurrencyInput) {
+      setConcurrencyInput(normalizedValue);
+    }
+    if (normalized !== concurrency) {
+      setConcurrency(normalized);
     }
   };
 
@@ -1182,9 +1223,9 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
                 <input 
                   type="number"
                   min={1} 
-                  max={10} 
-                  value={concurrency} 
-                  onChange={e => setConcurrency(parseInt(e.target.value) || 1)} 
+                  value={concurrencyInput} 
+                  onChange={(e) => handleConcurrencyInputChange(e.target.value)} 
+                  onBlur={handleConcurrencyInputBlur}
                   style={{ 
                     width: 32, 
                     border: 'none', 

@@ -6,6 +6,18 @@ export const parseMarkdownImage = (text: string): string | null => {
   return null;
 };
 
+const normalizeImageUrl = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('http') || trimmed.startsWith('data:image')) return trimmed;
+  const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/;
+  if (base64Pattern.test(trimmed)) {
+    return `data:image/png;base64,${trimmed}`;
+  }
+  return null;
+};
+
 const extractImageFromMessage = (message: any): string | null => {
   if (!message) return null;
   if (Array.isArray(message.content)) {
@@ -32,10 +44,21 @@ const extractImageFromMessage = (message: any): string | null => {
 };
 
 export const resolveImageFromResponse = (data: any): string | null => {
+  const resultUrl = data?.resultUrl ?? data?.result_url;
+  if (typeof resultUrl === 'string') {
+    const normalized = normalizeImageUrl(resultUrl);
+    return normalized || resultUrl;
+  }
   const fromDataArray = data?.data?.[0];
   if (fromDataArray) {
-    if (typeof fromDataArray === 'string') return fromDataArray;
-    if (fromDataArray.url) return fromDataArray.url;
+    if (typeof fromDataArray === 'string') {
+      const normalized = normalizeImageUrl(fromDataArray);
+      return normalized || fromDataArray;
+    }
+    if (fromDataArray.url) {
+      const normalized = normalizeImageUrl(fromDataArray.url);
+      return normalized || fromDataArray.url;
+    }
     if (fromDataArray.b64_json) {
       return `data:image/png;base64,${fromDataArray.b64_json}`;
     }
