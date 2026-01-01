@@ -401,8 +401,7 @@ const scheduleOrphanCleanup = () => {
   }, ORPHAN_CLEANUP_DELAY_MS)
 }
 
-const normalizeImageUrl = (value, options = {}) => {
-  const { allowBareBase64 = true } = options
+const normalizeImageUrl = (value) => {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   if (!trimmed) return null
@@ -414,11 +413,9 @@ const normalizeImageUrl = (value, options = {}) => {
   if (imagePrefixMatch) {
     return `data:${imagePrefixMatch[1]}${trimmed.slice(imagePrefixMatch[0].length)}`
   }
-  if (allowBareBase64) {
-    const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/
-    if (base64Pattern.test(trimmed)) {
-      return `data:image/png;base64,${trimmed}`
-    }
+  const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/
+  if (base64Pattern.test(trimmed)) {
+    return `data:image/png;base64,${trimmed}`
   }
   return null
 }
@@ -427,7 +424,7 @@ const parseMarkdownImage = (text = '') => {
   const mdImageRegex = /!\[.*?\]\((.*?)\)/
   const match = text.match(mdImageRegex)
   if (match && match[1]) return match[1]
-  return normalizeImageUrl(text, { allowBareBase64: false })
+  return normalizeImageUrl(text)
 }
 
 const extractImageFromMessage = (message) => {
