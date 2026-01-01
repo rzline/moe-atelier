@@ -401,24 +401,33 @@ const scheduleOrphanCleanup = () => {
   }, ORPHAN_CLEANUP_DELAY_MS)
 }
 
+const normalizeImageUrl = (value, options = {}) => {
+  const { allowBareBase64 = true } = options
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^data:image\//i.test(trimmed)) return trimmed
+  const imagePrefixMatch = trimmed.match(
+    /^(?:[a-z0-9.+-]+:)?(image\/[a-z0-9.+-]+;base64,)/i
+  )
+  if (imagePrefixMatch) {
+    return `data:${imagePrefixMatch[1]}${trimmed.slice(imagePrefixMatch[0].length)}`
+  }
+  if (allowBareBase64) {
+    const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/
+    if (base64Pattern.test(trimmed)) {
+      return `data:image/png;base64,${trimmed}`
+    }
+  }
+  return null
+}
+
 const parseMarkdownImage = (text = '') => {
   const mdImageRegex = /!\[.*?\]\((.*?)\)/
   const match = text.match(mdImageRegex)
   if (match && match[1]) return match[1]
-  if (text.startsWith('http') || text.startsWith('data:image')) return text
-  return null
-}
-
-const normalizeImageUrl = (value) => {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  if (!trimmed) return null
-  if (trimmed.startsWith('http') || trimmed.startsWith('data:image')) return trimmed
-  const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/
-  if (base64Pattern.test(trimmed)) {
-    return `data:image/png;base64,${trimmed}`
-  }
-  return null
+  return normalizeImageUrl(text, { allowBareBase64: false })
 }
 
 const extractImageFromMessage = (message) => {
