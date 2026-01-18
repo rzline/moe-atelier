@@ -4,6 +4,7 @@ import Icon, { DeleteFilled, DownloadOutlined, PictureFilled, LeftOutlined, Righ
 import { openImageDb, IMAGE_STORE_NAME } from '../utils/imageDb';
 import { buildBackendImageUrl } from '../utils/backendApi';
 import type { CollectionItem } from '../types/collection';
+import { COLORS } from '../theme/colors';
 
 const { Text } = Typography;
 
@@ -22,17 +23,6 @@ const InboxFilledSvg = () => (
 );
 
 const InboxFilled = (props: any) => <Icon component={InboxFilledSvg} {...props} />;
-
-// 样式常量 - 与PromptDrawer保持一致
-const COLORS = {
-  primary: '#FF9EB5',
-  secondary: '#FFC2D1',
-  accent: '#FFE5EC',
-  text: '#5D4037',
-  textLight: '#8D6E63',
-  bg: '#FFF9FA',
-  white: '#FFFFFF',
-};
 
 type ResolvedCollectionItem = CollectionItem & { resolvedImage?: string };
 

@@ -1,186 +1,42 @@
-import express from 'express'
+﻿import express from 'express'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-
-const rootDir = process.cwd()
-
-const loadEnvFile = () => {
-  const envPath = path.join(rootDir, '.env')
-  if (!fs.existsSync(envPath)) return
-  const raw = fs.readFileSync(envPath, 'utf-8')
-  raw.split(/\r?\n/).forEach((line) => {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) return
-    const eqIndex = trimmed.indexOf('=')
-    if (eqIndex === -1) return
-    const key = trimmed.slice(0, eqIndex).trim()
-    let value = trimmed.slice(eqIndex + 1).trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-    if (!(key in process.env)) {
-      process.env[key] = value
-    }
-  })
-}
-
-loadEnvFile()
-
-const isProd = process.argv.includes('--prod')
-const port = Number(process.env.PORT) || 5173
-const saveDir = path.resolve(rootDir, 'saved-images')
-const distDir = path.resolve(rootDir, 'dist')
-const serverDataDir = path.resolve(rootDir, 'server-data')
-const backendTasksDir = path.join(serverDataDir, 'tasks')
-const backendImagesDir = path.join(serverDataDir, 'images')
-const backendStatePath = path.join(serverDataDir, 'state.json')
-const backendCollectionPath = path.join(serverDataDir, 'collection.json')
-const backendPassword = process.env.BACKEND_PASSWORD || ''
-const backendLogResponse = ['1', 'true', 'yes'].includes(
-  String(process.env.BACKEND_LOG_RESPONSE || '').toLowerCase(),
-)
-const backendLogRequests = ['1', 'true', 'yes'].includes(
-  String(process.env.BACKEND_LOG_REQUESTS || '').toLowerCase(),
-)
-const backendLogOutbound = ['1', 'true', 'yes'].includes(
-  String(process.env.BACKEND_LOG_OUTBOUND || '').toLowerCase(),
-)
-
-const DEFAULT_BACKEND_CONFIG = {
-  apiUrl: 'https://api.openai.com/v1',
-  apiKey: '',
-  model: '',
-  apiFormat: 'openai',
-  apiVersion: 'v1',
-  vertexProjectId: '',
-  vertexLocation: 'us-central1',
-  vertexPublisher: 'google',
-  stream: false,
-  enableCollection: false,
-}
-
-const FORMAT_CONFIG_KEYS = [
-  'apiUrl',
-  'apiKey',
-  'model',
-  'apiVersion',
-  'vertexProjectId',
-  'vertexLocation',
-  'vertexPublisher',
-  'thinkingBudget',
-  'includeThoughts',
-  'includeImageConfig',
-  'includeSafetySettings',
-  'safety',
-  'imageConfig',
-  'webpQuality',
-  'useResponseModalities',
-  'customJson',
-]
-
-const pickFormatConfig = (config = {}) => {
-  const next = {}
-  FORMAT_CONFIG_KEYS.forEach((key) => {
-    if (Object.prototype.hasOwnProperty.call(config, key)) {
-      next[key] = config[key]
-    }
-  })
-  return next
-}
-
-const DEFAULT_GLOBAL_STATS = {
-  totalRequests: 0,
-  successCount: 0,
-  fastestTime: 0,
-  slowestTime: 0,
-  totalTime: 0,
-}
-
-const DEFAULT_TASK_STATS = {
-  totalRequests: 0,
-  successCount: 0,
-  fastestTime: 0,
-  slowestTime: 0,
-  totalTime: 0,
-}
-
-const MIN_CONCURRENCY = 1
-const DEFAULT_CONCURRENCY = 2
-const MAX_CONCURRENCY = Number.POSITIVE_INFINITY
-
-const BACKEND_LOG_MAX_CHARS = 800
-
-const truncateLogText = (value = '') => {
-  if (value.length <= BACKEND_LOG_MAX_CHARS) return value
-  return `${value.slice(0, BACKEND_LOG_MAX_CHARS)}...<${value.length}>`
-}
-
-const formatLogPayload = (payload) => {
-  if (payload === null || payload === undefined) return String(payload)
-  if (typeof payload === 'string') {
-    if (payload.startsWith('data:image')) {
-      return `${payload.slice(0, 60)}...<data:image>`
-    }
-    return truncateLogText(payload)
-  }
-  try {
-    return JSON.stringify(
-      payload,
-      (_key, value) => {
-        if (typeof value === 'string') {
-          if (value.startsWith('data:image')) {
-            return `${value.slice(0, 60)}...<data:image>`
-          }
-          return truncateLogText(value)
-        }
-        return value
-      },
-      2,
-    )
-  } catch {
-    return String(payload)
-  }
-}
-
-const logBackendResponse = (label, payload) => {
-  if (!backendLogResponse) return
-  console.log(`[backend] ${label}:`, formatLogPayload(payload))
-}
-
-const logBackendRequest = (label, payload) => {
-  if (!backendLogRequests) return
-  console.log(`[backend] ${label}:`, formatLogPayload(payload))
-}
-
-const logBackendOutbound = (label, payload) => {
-  if (!backendLogOutbound) return
-  console.log(`[backend] ${label}:`, formatLogPayload(payload))
-}
-
-const describeFetchError = (err) => ({
-  name: err?.name,
-  message: err?.message,
-  code: err?.code || err?.cause?.code,
-  errno: err?.errno || err?.cause?.errno,
-  type: err?.type || err?.cause?.type,
-})
-
-const getExtensionFromType = (contentType = '') => {
-  const normalized = contentType.toLowerCase()
-  const mapping = {
-    'image/png': '.png',
-    'image/jpeg': '.jpg',
-    'image/webp': '.webp',
-    'image/gif': '.gif',
-    'image/bmp': '.bmp',
-  }
-  const matched = Object.keys(mapping).find((key) => normalized.includes(key))
-  return matched ? mapping[matched] : '.bin'
-}
+import {
+  backendImagesDir,
+  backendLogRequests,
+  backendPassword,
+  backendTasksDir,
+  distDir,
+  isProd,
+  port,
+  rootDir,
+  DEFAULT_BACKEND_CONFIG,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_GLOBAL_STATS,
+  DEFAULT_TASK_STATS,
+  pickFormatConfig,
+} from './server/config.mjs'
+import {
+  logBackendOutbound,
+  logBackendRequest,
+  logBackendResponse,
+  describeFetchError,
+} from './server/logger.mjs'
+import { addSseClient, removeSseClient, sendSseEvent } from './server/sse.mjs'
+import {
+  createDefaultTaskState,
+  loadBackendCollection,
+  loadBackendState,
+  loadTaskState,
+  normalizeCollectionPayloadForSave,
+  normalizeConcurrency,
+  saveBackendCollection,
+  saveBackendState,
+  saveTaskState,
+} from './server/storage.mjs'
+import { parseMarkdownImage, resolveImageFromResponse } from './server/imageParser.mjs'
+import { getMimeFromFilename, saveBackendImageBuffer, saveImageBuffer } from './server/imageStore.mjs'
 
 const readRequestBody = async (req) => {
   const chunks = []
@@ -188,246 +44,6 @@ const readRequestBody = async (req) => {
     chunks.push(chunk)
   }
   return Buffer.concat(chunks)
-}
-
-const findExistingFile = async (dir, hash) => {
-  try {
-    const files = await fs.promises.readdir(dir)
-    return files.find((name) => name.startsWith(hash)) || null
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return null
-    throw err
-  }
-}
-
-const saveImageBuffer = async (buffer, contentType) => {
-  const fileHash = crypto.createHash('sha256').update(buffer).digest('hex')
-  const extension = getExtensionFromType(contentType)
-  const fileName = `${fileHash}${extension}`
-  const filePath = path.join(saveDir, fileName)
-
-  await fs.promises.mkdir(saveDir, { recursive: true })
-  const matched = await findExistingFile(saveDir, fileHash)
-  if (matched) {
-    return { saved: false, exists: true, fileName: matched }
-  }
-
-  await fs.promises.writeFile(filePath, buffer)
-  return { saved: true, exists: false, fileName }
-}
-
-const saveBackendImageBuffer = async (buffer, contentType) => {
-  const fileHash = crypto.createHash('sha256').update(buffer).digest('hex')
-  const extension = getExtensionFromType(contentType)
-  const fileName = `${fileHash}${extension}`
-  const filePath = path.join(backendImagesDir, fileName)
-
-  await fs.promises.mkdir(backendImagesDir, { recursive: true })
-  const matched = await findExistingFile(backendImagesDir, fileHash)
-  if (matched) {
-    return { saved: false, exists: true, fileName: matched }
-  }
-
-  await fs.promises.writeFile(filePath, buffer)
-  return { saved: true, exists: false, fileName }
-}
-
-const clampNumber = (value, min, max, fallback) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) return fallback
-  return Math.min(max, Math.max(min, value))
-}
-
-const normalizeConcurrency = (value, fallback = DEFAULT_CONCURRENCY) =>
-  clampNumber(value, MIN_CONCURRENCY, MAX_CONCURRENCY, fallback)
-
-const createDefaultTaskState = () => ({
-  version: 1,
-  prompt: '',
-  concurrency: DEFAULT_CONCURRENCY,
-  enableSound: true,
-  results: [],
-  uploads: [],
-  stats: { ...DEFAULT_TASK_STATS },
-})
-
-const readJsonFile = async (filePath, fallback) => {
-  try {
-    const raw = await fs.promises.readFile(filePath, 'utf-8')
-    if (!raw.trim()) return fallback
-    return JSON.parse(raw)
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return fallback
-    if (err && err.name === 'SyntaxError') {
-      console.warn(`Invalid JSON file, fallback to defaults: ${filePath}`, err)
-      return fallback
-    }
-    throw err
-  }
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const writeJsonFileAtomic = async (filePath, data) => {
-  const dir = path.dirname(filePath)
-  const baseName = path.basename(filePath)
-  const payload = JSON.stringify(data, null, 2)
-  await fs.promises.mkdir(dir, { recursive: true })
-
-  let tempPath = ''
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const nonce = crypto.randomUUID()
-    tempPath = path.join(
-      dir,
-      `.${baseName}.${process.pid}.${Date.now()}.${nonce}.tmp`,
-    )
-    try {
-      await fs.promises.writeFile(tempPath, payload, { encoding: 'utf-8', flag: 'wx' })
-      break
-    } catch (err) {
-      if (err && err.code === 'EEXIST' && attempt < 2) continue
-      throw err
-    }
-  }
-
-  try {
-    await fs.promises.rename(tempPath, filePath)
-  } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      await fs.promises.mkdir(dir, { recursive: true })
-      try {
-        await fs.promises.rename(tempPath, filePath)
-        return
-      } catch (retryErr) {
-        if (!retryErr || retryErr.code !== 'ENOENT') {
-          throw retryErr
-        }
-      }
-      await fs.promises.writeFile(filePath, payload, { encoding: 'utf-8' })
-      return
-    }
-    if (err && ['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        await sleep(30 * (attempt + 1))
-        try {
-          await fs.promises.rename(tempPath, filePath)
-          return
-        } catch (retryErr) {
-          if (!retryErr || !['EPERM', 'EACCES', 'EBUSY'].includes(retryErr.code)) {
-            throw retryErr
-          }
-        }
-      }
-      await fs.promises.writeFile(filePath, payload, { encoding: 'utf-8' })
-      return
-    }
-    throw err
-  } finally {
-    if (tempPath) {
-      await fs.promises.unlink(tempPath).catch(() => undefined)
-    }
-  }
-}
-
-const coerceString = (value) => (typeof value === 'string' ? value : '')
-
-const stripBackendTokenFromUrl = (value = '') => {
-  if (!value.includes('/api/backend/image/')) return value
-  return value.replace(/[?&]token=[^&]+/g, '').replace(/[?&]$/, '')
-}
-
-const sanitizeCollectionItem = (value) => {
-  if (!value || typeof value !== 'object') return null
-  const raw = value
-  const id = coerceString(raw.id)
-  if (!id) return null
-  const prompt = coerceString(raw.prompt)
-  const taskId = coerceString(raw.taskId)
-  const timestamp =
-    typeof raw.timestamp === 'number' && Number.isFinite(raw.timestamp)
-      ? raw.timestamp
-      : Date.now()
-  const image =
-    typeof raw.image === 'string' ? stripBackendTokenFromUrl(raw.image) : undefined
-  const localKey = typeof raw.localKey === 'string' ? raw.localKey : undefined
-  const sourceSignature =
-    typeof raw.sourceSignature === 'string' ? raw.sourceSignature : undefined
-  const item = { id, prompt, taskId, timestamp }
-  if (image) item.image = image
-  if (localKey) item.localKey = localKey
-  if (sourceSignature) item.sourceSignature = sourceSignature
-  return item
-}
-
-const normalizeCollectionPayload = (payload) => {
-  if (!Array.isArray(payload)) return []
-  const items = []
-  const seen = new Set()
-  payload.forEach((entry) => {
-    const item = sanitizeCollectionItem(entry)
-    if (!item) return
-    if (seen.has(item.id)) return
-    seen.add(item.id)
-    items.push(item)
-  })
-  return items
-}
-
-const loadBackendState = async () => {
-  const data = await readJsonFile(backendStatePath, null)
-  const config = { ...DEFAULT_BACKEND_CONFIG, ...(data?.config || {}) }
-  const rawFormatMap = data?.configByFormat
-  const configByFormat =
-    rawFormatMap && typeof rawFormatMap === 'object' && !Array.isArray(rawFormatMap)
-      ? { ...rawFormatMap }
-      : {}
-  const apiFormat =
-    config.apiFormat === 'gemini' || config.apiFormat === 'vertex'
-      ? config.apiFormat
-      : 'openai'
-  config.apiFormat = apiFormat
-  if (!configByFormat[apiFormat]) {
-    configByFormat[apiFormat] = pickFormatConfig(config)
-  }
-  return {
-    config,
-    configByFormat,
-    tasksOrder: Array.isArray(data?.tasksOrder) ? data.tasksOrder : [],
-    globalStats: { ...DEFAULT_GLOBAL_STATS, ...(data?.globalStats || {}) },
-  }
-}
-
-const saveBackendState = async (state) => {
-  await writeJsonFileAtomic(backendStatePath, state)
-  broadcastSseEvent('state', state)
-}
-
-const loadBackendCollection = async () => {
-  const data = await readJsonFile(backendCollectionPath, [])
-  return normalizeCollectionPayload(data)
-}
-
-const saveBackendCollection = async (items) => {
-  await writeJsonFileAtomic(backendCollectionPath, items)
-}
-
-const getTaskFilePath = (taskId) => path.join(backendTasksDir, `${taskId}.json`)
-
-const loadTaskState = async (taskId) => {
-  const data = await readJsonFile(getTaskFilePath(taskId), null)
-  if (!data) return null
-  return {
-    ...createDefaultTaskState(),
-    ...data,
-    concurrency: normalizeConcurrency(data?.concurrency),
-    stats: { ...DEFAULT_TASK_STATS, ...(data?.stats || {}) },
-    results: Array.isArray(data?.results) ? data.results : [],
-    uploads: Array.isArray(data?.uploads) ? data.uploads : [],
-  }
-}
-
-const saveTaskState = async (taskId, state) => {
-  await writeJsonFileAtomic(getTaskFilePath(taskId), state)
-  broadcastSseEvent('task', { taskId, state })
 }
 
 const RETRY_DELAY_MS = 1000
@@ -473,11 +89,13 @@ const getCollectionImageKey = (item) => {
   return key ? path.basename(String(key)) : ''
 }
 
+const getTaskFilePath = (taskId) => path.join(backendTasksDir, `${taskId}.json`)
+
 const collectImageKeysFromCollection = (items) => {
-    const keys = new Set()
+  const keys = new Set()
   if (!Array.isArray(items)) return keys
   items.forEach((item) => {
-        const key = getCollectionImageKey(item)
+    const key = getCollectionImageKey(item)
     if (!key) return
     keys.add(key)
   })
@@ -549,162 +167,10 @@ const scheduleOrphanCleanup = () => {
   }, ORPHAN_CLEANUP_DELAY_MS)
 }
 
-const MIN_BASE64_LENGTH = 256
-const BASE64_CONTENT_REGEX = /^[A-Za-z0-9+/]+={0,2}$/
-const INLINE_IMAGE_DATA_REGEX =
-  /(?:data:|[a-z0-9.+-]+:)?image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/i
-
-const normalizeBase64Payload = (value) => {
-  const compact = value.replace(/\s+/g, '')
-  if (compact.length < MIN_BASE64_LENGTH) return null
-  if (!BASE64_CONTENT_REGEX.test(compact)) return null
-  return compact
-}
-
-const normalizeImageUrl = (value) => {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  if (!trimmed) return null
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
-  const imagePrefixMatch = trimmed.match(
-    /^(?:[a-z0-9.+-]+:)?(image\/[a-z0-9.+-]+;base64,)([\s\S]+)$/i
-  )
-  if (imagePrefixMatch) {
-    const payload = normalizeBase64Payload(imagePrefixMatch[2])
-    if (!payload) return null
-    return `data:${imagePrefixMatch[1]}${payload}`
-  }
-  const base64Payload = normalizeBase64Payload(trimmed)
-  if (base64Payload) {
-    return `data:image/png;base64,${base64Payload}`
-  }
-  return null
-}
-
-const extractImageFromText = (text = '') => {
-  if (!text) return null
-  const mdImageRegex = /!\[[\s\S]*?\]\(([\s\S]*?)\)/
-  const match = text.match(mdImageRegex)
-  if (match && match[1]) {
-    const normalized = normalizeImageUrl(match[1])
-    if (normalized) return normalized
-  }
-  const inlineMatch = text.match(INLINE_IMAGE_DATA_REGEX)
-  if (inlineMatch) {
-    const normalized = normalizeImageUrl(inlineMatch[0])
-    if (normalized) return normalized
-  }
-  return normalizeImageUrl(text)
-}
-
-const parseMarkdownImage = (text = '') => extractImageFromText(text)
-
-const extractImageFromGeminiPart = (part) => {
-  if (!part) return null
-  const inlineData = part.inline_data || part.inlineData
-  const fileData = part.file_data || part.fileData
-  if (inlineData?.data) {
-    const mimeType = inlineData.mime_type || inlineData.mimeType || 'image/png'
-    const payload = normalizeBase64Payload(String(inlineData.data))
-    if (payload) {
-      return `data:${mimeType};base64,${payload}`
-    }
-  }
-  if (fileData?.file_uri || fileData?.fileUri) {
-    const uri = fileData.file_uri || fileData.fileUri
-    const normalized = normalizeImageUrl(uri)
-    if (normalized) return normalized
-  }
-  if (typeof part.text === 'string') {
-    const imageUrl = parseMarkdownImage(part.text)
-    if (imageUrl) return imageUrl
-  }
-  return null
-}
-
-const extractImageFromGeminiCandidates = (candidates = []) => {
-  for (const candidate of candidates) {
-    const parts = candidate?.content?.parts
-    if (Array.isArray(parts)) {
-      for (const part of parts) {
-        const image = extractImageFromGeminiPart(part)
-        if (image) return image
-      }
-    }
-  }
-  return null
-}
-
-const extractImageFromMessage = (message) => {
-  if (!message) return null
-  if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part?.type === 'image_url') {
-        const url = part?.image_url?.url || part?.image_url
-        if (url) {
-          const normalized = normalizeImageUrl(url)
-          if (normalized) return normalized
-        }
-      }
-      if (part?.type === 'text' && typeof part.text === 'string') {
-        const imageUrl = parseMarkdownImage(part.text)
-        if (imageUrl) return imageUrl
-      }
-    }
-  }
-  if (typeof message.content === 'string') {
-    const imageUrl = parseMarkdownImage(message.content)
-    if (imageUrl) return imageUrl
-  }
-  if (typeof message.reasoning_content === 'string') {
-    const imageUrl = parseMarkdownImage(message.reasoning_content)
-    if (imageUrl) return imageUrl
-  }
-  return null
-}
-
-const resolveImageFromResponse = (data) => {
-  const resultUrl = data?.resultUrl ?? data?.result_url
-  if (typeof resultUrl === 'string') {
-    const normalized = normalizeImageUrl(resultUrl)
-    if (normalized) return normalized
-  }
-  if (Array.isArray(data?.candidates)) {
-    const image = extractImageFromGeminiCandidates(data.candidates)
-    if (image) return image
-  }
-  const fromDataArray = data?.data?.[0]
-  if (fromDataArray) {
-    if (typeof fromDataArray === 'string') {
-      const normalized = normalizeImageUrl(fromDataArray)
-      if (normalized) return normalized
-    }
-    if (fromDataArray.url) {
-      const normalized = normalizeImageUrl(fromDataArray.url)
-      if (normalized) return normalized
-    }
-    if (fromDataArray.b64_json) {
-      const normalized = normalizeImageUrl(fromDataArray.b64_json)
-      if (normalized) return normalized
-    }
-  }
-  return extractImageFromMessage(data?.choices?.[0]?.message)
-}
-
 const parseDataUrl = (dataUrl = '') => {
   const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
   if (!match) return null
   return { contentType: match[1], buffer: Buffer.from(match[2], 'base64') }
-}
-
-const getMimeFromFilename = (fileName = '') => {
-  const lower = fileName.toLowerCase()
-  if (lower.endsWith('.png')) return 'image/png'
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
-  if (lower.endsWith('.webp')) return 'image/webp'
-  if (lower.endsWith('.gif')) return 'image/gif'
-  if (lower.endsWith('.bmp')) return 'image/bmp'
-  return 'application/octet-stream'
 }
 
 const activeControllers = new Map()
@@ -1517,22 +983,6 @@ void cleanupOrphanedImages().catch((err) => {
 })
 
 const backendTokens = new Set()
-const sseClients = new Set()
-
-const sendSseEvent = (res, event, data) => {
-  res.write(`event: ${event}\n`)
-  res.write(`data: ${JSON.stringify(data)}\n\n`)
-}
-
-const broadcastSseEvent = (event, data) => {
-  for (const res of sseClients) {
-    try {
-      sendSseEvent(res, event, data)
-    } catch (err) {
-      sseClients.delete(res)
-    }
-  }
-}
 
 const requireBackendAuth = (req, res, next) => {
   const headerToken = req.headers['x-backend-token']
@@ -1571,9 +1021,9 @@ app.get('/api/backend/stream', requireBackendAuth, async (req, res) => {
   })
   res.flushHeaders()
   res.write('retry: 2000\n\n')
-  sseClients.add(res)
+  addSseClient(res)
   req.on('close', () => {
-    sseClients.delete(res)
+    removeSseClient(res)
   })
   try {
     const state = await loadBackendState()
@@ -1642,7 +1092,7 @@ app.get('/api/backend/collection', requireBackendAuth, async (_req, res) => {
 app.put('/api/backend/collection', requireBackendAuth, async (req, res) => {
   try {
     const previous = await loadBackendCollection()
-    const items = normalizeCollectionPayload(req.body)
+    const items = normalizeCollectionPayloadForSave(req.body)
     await saveBackendCollection(items)
     const prevKeys = collectImageKeysFromCollection(previous)
     const nextKeys = collectImageKeysFromCollection(items)
@@ -1923,3 +1373,5 @@ if (isProd) {
 app.listen(port, () => {
   console.log(`[server] http://localhost:${port} (${isProd ? 'prod' : 'dev'})`)
 })
+
+

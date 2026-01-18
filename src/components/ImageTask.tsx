@@ -10,7 +10,8 @@ import {
   StarFilled,
   LoadingOutlined,
   PlayCircleFilled,
-  HolderOutlined
+  HolderOutlined,
+  CloudUploadOutlined
 } from '@ant-design/icons';
 import type { RcFile, UploadFile } from 'antd/es/upload/interface';
 import axios from 'axios';
@@ -36,6 +37,7 @@ import {
   resolveApiVersion,
 } from '../utils/apiUrl';
 import { calculateSuccessRate, formatDuration } from '../utils/stats';
+import { buildPromptKey } from '../utils/prompt';
 import {
   buildBackendImageUrl,
   cleanupBackendImages,
@@ -86,13 +88,6 @@ type CollectionUploadSnapshot = {
 type CollectionRequestSnapshot = {
   prompt: string;
   uploads: CollectionUploadSnapshot[];
-};
-
-const normalizePrompt = (prompt: string) => prompt.trim().replace(/\s+/g, ' ');
-
-const buildPromptKey = (prompt: string) => {
-  const normalized = normalizePrompt(prompt);
-  return normalized ? normalized.toLowerCase() : '__empty__';
 };
 
 const normalizeStoredResult = (item: PersistedSubTaskResult, backendMode: boolean): SubTaskResult => {
@@ -158,6 +153,7 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
   const [isGlobalLoading, setIsGlobalLoading] = useState(false);
   const [stats, setStats] = useState<TaskStats>({ ...DEFAULT_TASK_STATS });
   const [hydrated, setHydrated] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const isRetryingRef = useRef<Map<string, boolean>>(new Map());
@@ -1738,6 +1734,42 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
     setIsGlobalLoading(false);
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files).filter((file) =>
+      file.type.startsWith('image/'),
+    );
+    if (files.length === 0) return;
+
+    const newUploads: UploadFile[] = files.map((file) => ({
+      uid: uuidv4(),
+      name: file.name,
+      status: 'done',
+      originFileObj: file as RcFile,
+      type: file.type,
+      size: file.size,
+      lastModified: file.lastModified,
+    }));
+
+    handleUploadChange({ fileList: [...fileList, ...newUploads] });
+  };
+
   const handleUploadChange = ({ fileList: newFileList }: { fileList: UploadFile[] }) => {
     const fromCollectionMap = new Map(
       fileList.map((file) => [file.uid, file.fromCollection]),
@@ -1836,7 +1868,55 @@ const ImageTask: React.FC<ImageTaskProps> = ({ id, storageKey, config, backendMo
   const slowestTimeStr = formatDuration(stats.slowestTime);
 
   return (
-    <div className="moe-card" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div
+      className="moe-card"
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        borderColor: isDragOver ? '#FF9EB5' : undefined,
+        borderStyle: isDragOver ? 'dashed' : undefined,
+        borderWidth: isDragOver ? 2 : undefined,
+        transition: 'all 0.2s',
+        position: 'relative',
+      }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragOver && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(255, 255, 255, 0.9)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 100,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 'inherit',
+          pointerEvents: 'none',
+          animation: 'fadeIn 0.2s ease-out',
+        }}>
+          <div style={{
+            background: '#FFF0F3',
+            width: 80,
+            height: 80,
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: 16,
+            boxShadow: '0 4px 12px rgba(255, 158, 181, 0.2)'
+          }}>
+            <CloudUploadOutlined style={{ fontSize: 40, color: '#FF9EB5' }} />
+          </div>
+          <Text strong style={{ fontSize: 16, color: '#665555' }}>释放以添加参考图</Text>
+          <Text type="secondary" style={{ fontSize: 12, marginTop: 4 }}>支持 JPG, PNG, WebP, GIF</Text>
+        </div>
+      )}
+      
       {/* Header */}
       <div style={{ 
         padding: '12px 16px', 

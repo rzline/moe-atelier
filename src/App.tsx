@@ -1,48 +1,22 @@
-import * as React from 'react';
+﻿import * as React from 'react';
 import { useState, useCallback, useRef } from 'react';
-import { Layout, Button, Form, Input, Switch, Row, Col, Typography, Space, ConfigProvider, Drawer, AutoComplete, Radio, message, Tooltip, Select, Divider, Collapse, Slider } from 'antd';
+import { Layout, Button, Form, Row, Col, Typography, Space, ConfigProvider, message, Tooltip } from 'antd';
 import { 
   PlusOutlined, 
   SettingFilled, 
   ThunderboltFilled, 
   CheckCircleFilled, 
-  ApiFilled, 
   HeartFilled,
   AppstoreFilled,
   ExperimentFilled,
-  SafetyCertificateFilled,
   ReloadOutlined,
-  DeleteFilled,
-  KeyOutlined
+  DeleteFilled
 } from '@ant-design/icons';
-import {
-  DndContext, 
-  closestCenter,
-  KeyboardSensor,
-  MouseSensor,
-  TouchSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-  DragOverlay,
-  DragStartEvent,
-  defaultDropAnimationSideEffects,
-  DropAnimation
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  rectSortingStrategy,
-  useSortable,
-  defaultAnimateLayoutChanges,
-  AnimateLayoutChanges
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { v4 as uuidv4 } from 'uuid';
-import ImageTask from './components/ImageTask';
 import PromptDrawer from './components/PromptDrawer';
 import CollectionBox from './components/CollectionBox';
+import TaskGrid from './components/TaskGrid';
+import ConfigDrawer from './components/ConfigDrawer';
 import type { AppConfig, TaskConfig } from './types/app';
 import type { CollectionItem } from './types/collection';
 import type { GlobalStats } from './types/stats';
@@ -68,8 +42,6 @@ import {
 import { useDebouncedSync, useInputGuard } from './utils/inputSync';
 import {
   type ApiFormat,
-  API_VERSION_OPTIONS,
-  DEFAULT_API_BASES,
   extractVertexProjectId,
   inferApiVersionFromUrl,
   normalizeApiBase,
@@ -105,26 +77,6 @@ const EMPTY_GLOBAL_STATS: GlobalStats = {
   slowestTime: 0,
   totalTime: 0,
 };
-const IMAGE_SIZE_OPTIONS = ['1K', '2K', '4K'];
-const ASPECT_RATIO_OPTIONS = [
-  'auto',
-  '1:1',
-  '3:4',
-  '4:3',
-  '9:16',
-  '16:9',
-  '2:3',
-  '3:2',
-  '4:5',
-  '5:4',
-];
-const SAFETY_OPTIONS = [
-  { label: 'OFF', value: 'OFF' },
-  { label: 'BLOCK_NONE', value: 'BLOCK_NONE' },
-  { label: 'BLOCK_ONLY_HIGH', value: 'BLOCK_ONLY_HIGH' },
-  { label: 'BLOCK_MEDIUM', value: 'BLOCK_MEDIUM_AND_ABOVE' },
-  { label: 'BLOCK_LOW', value: 'BLOCK_LOW_AND_ABOVE' },
-];
 const API_FORMATS: ApiFormat[] = ['openai', 'gemini', 'vertex'];
 
 type FormatConfigMap = Record<ApiFormat, FormatConfig>;
@@ -155,148 +107,6 @@ const buildBackendFormatConfigs = (
   return next;
 };
 
-interface SortableTaskItemProps {
-  task: TaskConfig;
-  config: AppConfig;
-  backendMode: boolean;
-  onRemove: (id: string) => void;
-  onStatsUpdate: (type: 'request' | 'success' | 'fail', duration?: number) => void;
-  onCollect: (item: CollectionItem) => void;
-  collectionRevision: number;
-}
-
-const animateLayoutChanges: AnimateLayoutChanges = (args) =>
-  defaultAnimateLayoutChanges({ ...args, wasDragging: true });
-
-interface LazySliderProps {
-  value?: number;
-  onChange?: (value: number) => void;
-  min: number;
-  max: number;
-  step?: number;
-}
-
-const LazySliderInput: React.FC<LazySliderProps> = ({ value = 0, onChange, min, max, step = 1 }) => {
-  const [localValue, setLocalValue] = useState<number>(value);
-  
-  React.useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
-
-  const handleSliderChange = (val: number) => {
-    setLocalValue(val);
-  };
-
-  const handleSliderAfterChange = (val: number) => {
-    onChange?.(val);
-  };
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    if (val === '') return;
-    if (!/^\d+$/.test(val)) return;
-    setLocalValue(Number(val));
-  };
-
-  const handleInputBlur = () => {
-    let constrained = Math.max(min, Math.min(max, localValue));
-    if (step) {
-      constrained = Math.round(constrained / step) * step;
-    }
-    setLocalValue(constrained);
-    onChange?.(constrained);
-  };
-
-  return (
-    <Row gutter={12} align="middle">
-      <Col span={16}>
-        <Slider
-          min={min}
-          max={max}
-          step={step}
-          value={localValue}
-          onChange={handleSliderChange}
-          onAfterChange={handleSliderAfterChange}
-        />
-      </Col>
-      <Col span={8}>
-        <div style={{ 
-          background: '#fff', 
-          padding: '2px 8px', 
-          borderRadius: 12, 
-          display: 'flex', 
-          alignItems: 'center',
-          height: 28,
-          justifyContent: 'center'
-        }}>
-          <input 
-            type="number"
-            value={localValue}
-            onChange={handleInputChange} 
-            onBlur={handleInputBlur}
-            style={{ 
-              width: '100%', 
-              border: 'none', 
-              textAlign: 'center', 
-              color: '#665555', 
-              fontWeight: 700,
-              background: 'transparent',
-              outline: 'none',
-              fontSize: 12,
-              padding: 0,
-            }}
-          />
-        </div>
-      </Col>
-    </Row>
-  );
-};
-
-const SortableTaskItem = ({ task, config, backendMode, onRemove, onStatsUpdate, onCollect, collectionRevision }: SortableTaskItemProps) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging
-  } = useSortable({ 
-    id: task.id,
-    animateLayoutChanges
-  });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 999 : 'auto',
-    opacity: isDragging ? 0 : 1,
-  };
-
-  return (
-    <Col 
-      id={task.id}
-      xs={24} sm={12} xl={8} 
-      ref={setNodeRef} 
-      style={style}
-    >
-      <div className="fade-in-up" style={{ height: '100%' }}>
-        <ImageTask
-          id={task.id}
-          storageKey={getTaskStorageKey(task.id)}
-          config={config}
-          backendMode={backendMode}
-          onRemove={() => onRemove(task.id)}
-          onStatsUpdate={onStatsUpdate}
-          onCollect={onCollect}
-          collectionRevision={collectionRevision}
-          dragAttributes={attributes}
-          dragListeners={listeners}
-        />
-      </div>
-    </Col>
-  );
-};
-
 function App() {
   const initialBackendMode = getBackendMode() && Boolean(getBackendToken());
   const [config, setConfig] = useState<AppConfig>(() => loadConfig());
@@ -313,8 +123,6 @@ function App() {
   const [promptDrawerVisible, setPromptDrawerVisible] = useState(false);
   const [models, setModels] = useState<{label: string, value: string}[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [activeItemWidth, setActiveItemWidth] = useState<number | undefined>(undefined);
   const [form] = Form.useForm();
   const [backendMode, setBackendModeState] = useState<boolean>(() => initialBackendMode);
   const [backendAuthPending, setBackendAuthPending] = useState(false);
@@ -366,85 +174,6 @@ function App() {
     shouldPreserve: shouldPreserveConfig,
   } = configGuard;
   const { markSynced: markConfigSynced } = configSync;
-
-  const sensors = useSensors(
-    useSensor(MouseSensor),
-    useSensor(TouchSensor, {
-      activationConstraint: {
-        delay: 250,
-        tolerance: 5,
-      },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event;
-    setActiveId(active.id as string);
-    const node = document.getElementById(active.id as string);
-    if (node) {
-      // 获取内部内容容器的宽度，排除 Col 的 padding 影响
-      const innerContent = node.querySelector('.fade-in-up') as HTMLElement;
-      if (innerContent) {
-        setActiveItemWidth(innerContent.offsetWidth);
-      } else {
-        setActiveItemWidth(node.offsetWidth);
-      }
-    }
-  };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    setActiveId(null);
-    setActiveItemWidth(undefined);
-
-    if (active.id !== over?.id) {
-      setTasks((items) => {
-        const oldIndex = items.findIndex((item) => item.id === active.id);
-        const newIndex = items.findIndex((item) => item.id === over?.id);
-        return arrayMove(items, oldIndex, newIndex);
-      });
-    }
-  };
-
-  const handleDragCancel = () => {
-    setActiveId(null);
-    setActiveItemWidth(undefined);
-  };
-
-  const dropAnimation: DropAnimation = {
-    duration: 300,
-    easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
-    sideEffects: (args) => {
-      const { dragOverlay } = args;
-      const defaultFn = defaultDropAnimationSideEffects({
-        styles: {
-          active: {
-            opacity: '0',
-          },
-        },
-      });
-      const cleanup = defaultFn(args);
-
-      const inner = dragOverlay.node.querySelector('.drag-overlay-item');
-      if (inner) {
-        inner.animate(
-          [
-            { transform: 'scale(1.02)' },
-            { transform: 'scale(1)' }
-          ],
-          {
-            duration: 300,
-            easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
-            fill: 'forwards'
-          }
-        );
-      }
-      return cleanup;
-    },
-  };
 
   const applyBackendState = useCallback((state: BackendState) => {
       if (!backendModeRef.current) return;
@@ -939,6 +668,10 @@ function App() {
     }
     setTasks([...tasks, { id: newTaskId, prompt: '' }]);
   };
+
+  const handleReorderTasks = useCallback((nextTasks: TaskConfig[]) => {
+    setTasks(nextTasks);
+  }, []);
 
   const handleCreateTaskFromPrompt = (prompt: string) => {
     const newTaskId = uuidv4();
@@ -1513,56 +1246,16 @@ function App() {
             </Text>
           </div>
 
-          <DndContext 
-            sensors={sensors} 
-            collisionDetection={closestCenter} 
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onDragCancel={handleDragCancel}
-          >
-            <SortableContext 
-              items={tasks.map(t => t.id)}
-              strategy={rectSortingStrategy}
-            >
-              <Row gutter={[24, 24]}>
-                {tasks.map((task: TaskConfig) => (
-                  <SortableTaskItem 
-                    key={task.id} 
-                    task={task} 
-                    config={config}
-                    backendMode={backendMode}
-                    onRemove={handleRemoveTask}
-                    onStatsUpdate={updateGlobalStats}
-                    onCollect={handleCollect}
-                    collectionRevision={collectionRevision}
-                  />
-                ))}
-              </Row>
-            </SortableContext>
-            <DragOverlay dropAnimation={dropAnimation}>
-              {activeId ? (
-                <div 
-                  className="drag-overlay-item" 
-                  style={{ 
-                    cursor: 'grabbing',
-                    width: activeItemWidth 
-                  }}
-                >
-                   <ImageTask
-                      id={activeId}
-                      storageKey={getTaskStorageKey(activeId)}
-                      config={config}
-                      backendMode={backendMode}
-                      onRemove={() => handleRemoveTask(activeId)}
-                      onStatsUpdate={updateGlobalStats}
-                      collectionRevision={collectionRevision}
-                      dragAttributes={{}}
-                      dragListeners={{}}
-                    />
-                </div>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
+          <TaskGrid
+            tasks={tasks}
+            config={config}
+            backendMode={backendMode}
+            collectionRevision={collectionRevision}
+            onRemoveTask={handleRemoveTask}
+            onStatsUpdate={updateGlobalStats}
+            onCollect={handleCollect}
+            onReorder={handleReorderTasks}
+          />
         </Content>
 
         <PromptDrawer 
@@ -1584,402 +1277,32 @@ function App() {
           />
         )}
 
-        {/* 配置抽屉 */}
-        <Drawer
-          title={
-            <Space>
-              <div style={{ 
-                width: 32, height: 32, borderRadius: 10, background: '#FFF0F3', 
-                display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FF9EB5' 
-              }}>
-                <SettingFilled />
-              </div>
-              <span style={{ fontWeight: 800, fontSize: 18, color: '#665555' }}>系统配置</span>
-            </Space>
-          }
-          placement="right"
+        <ConfigDrawer
+          visible={configVisible}
+          config={config}
+          form={form}
           onClose={() => {
             setConfigVisible(false);
             if (backendAuthPending) {
               handleBackendAuthCancel();
             }
           }}
-          open={configVisible}
-          width={400}
-          styles={{ body: { padding: 24 } }}
-        >
-          <Form
-            layout="vertical"
-            initialValues={config}
-            onValuesChange={handleConfigChange}
-            form={form}
-          >
-            <Form.Item label={<span style={{ fontWeight: 700, color: '#665555' }}>API 格式</span>}>
-              <Form.Item name="apiFormat" noStyle>
-                <Radio.Group optionType="button" buttonStyle="solid">
-                  <Radio.Button value="openai">OpenAI</Radio.Button>
-                  <Radio.Button value="gemini">Gemini</Radio.Button>
-                  <Radio.Button value="vertex">Vertex</Radio.Button>
-                </Radio.Group>
-              </Form.Item>
-            </Form.Item>
-
-            <Form.Item
-              noStyle
-              shouldUpdate={(prev, cur) => prev.apiFormat !== cur.apiFormat}
-            >
-              {({ getFieldValue }) => {
-                const apiFormat = getFieldValue('apiFormat') || 'openai';
-                if (apiFormat === 'openai') {
-                  return null;
-                }
-                return (
-                  <Form.Item label={<span style={{ fontWeight: 700, color: '#665555' }}>API 版本</span>}>
-                    <Form.Item name="apiVersion" noStyle>
-                      <AutoComplete
-                        options={API_VERSION_OPTIONS.map((version) => ({ value: version }))}
-                        filterOption={(inputValue, option) =>
-                          option!.value.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1
-                        }
-                      >
-                        <Input
-                          size="large"
-                          placeholder="v1beta"
-                          prefix={<ApiFilled style={{ color: '#FF9EB5' }} />}
-                        />
-                      </AutoComplete>
-                    </Form.Item>
-                  </Form.Item>
-                );
-              }}
-            </Form.Item>
-
-            <Form.Item
-              label={<span style={{ fontWeight: 700, color: '#665555' }}>API 接口地址</span>}
-              shouldUpdate={(prev, cur) => prev.apiFormat !== cur.apiFormat}
-            >
-              {({ getFieldValue }) => {
-                const format = (getFieldValue('apiFormat') || 'openai') as ApiFormat;
-                const placeholder =
-                  DEFAULT_API_BASES[format] || DEFAULT_API_BASES.openai;
-                return (
-                  <Form.Item name="apiUrl" noStyle>
-                    <Input
-                      size="large"
-                      placeholder={placeholder}
-                      prefix={<ApiFilled style={{ color: '#FF9EB5' }} />}
-                    />
-                  </Form.Item>
-                );
-              }}
-            </Form.Item>
-
-            <Form.Item name="apiKey" label={<span style={{ fontWeight: 700, color: '#665555' }}>API 密钥</span>}>
-              <Input.Password size="large" placeholder="sk-..." prefix={<SafetyCertificateFilled style={{ color: '#FF9EB5' }} />} />
-            </Form.Item>
-            
-            <Form.Item label={<span style={{ fontWeight: 700, color: '#665555' }}>模型名称</span>} style={{ marginBottom: 48 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <Form.Item name="model" noStyle>
-                    <AutoComplete
-                      className="model-autocomplete"
-                      options={models}
-                      filterOption={(inputValue, option) =>
-                        option!.value.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1
-                      }
-                      dropdownMatchSelectWidth={false}
-                      dropdownStyle={{ minWidth: 300 }}
-                    >
-                      <Input 
-                        size="large" 
-                        placeholder="请输入模型名称"
-                        prefix={<ExperimentFilled style={{ color: '#FF9EB5' }} />} 
-                      />
-                    </AutoComplete>
-                  </Form.Item>
-                </div>
-                <Tooltip title="获取模型列表">
-                  <Button 
-                    className="model-refresh-btn"
-                    icon={<ReloadOutlined spin={loadingModels} />} 
-                    onClick={fetchModels}
-                    size="large"
-                    shape="circle"
-                  />
-                </Tooltip>
-              </div>
-            </Form.Item>
-            
-            <div style={{ background: '#F8F9FA', padding: '16px', borderRadius: 16, marginBottom: 24, border: '1px solid #eee' }}>
-              <Form.Item
-                label={<span style={{ fontWeight: 700, color: '#665555' }}>流式传输</span>}
-                style={{ marginBottom: 12 }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>启用实时生成进度更新</Text>
-                  <Form.Item name="stream" valuePropName="checked" noStyle>
-                    <Switch />
-                  </Form.Item>
-                </div>
-              </Form.Item>
-
-              <Form.Item
-                label={<span style={{ fontWeight: 700, color: '#665555' }}>图片收纳</span>}
-                style={{ marginBottom: 0 }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>自动收纳生成的图片和提示词</Text>
-                  <Form.Item name="enableCollection" valuePropName="checked" noStyle>
-                    <Switch />
-                  </Form.Item>
-                </div>
-              </Form.Item>
-            </div>
-
-            <Form.Item
-              noStyle
-              shouldUpdate={(prev, cur) => prev.apiFormat !== cur.apiFormat}
-            >
-              {({ getFieldValue }) => {
-                const apiFormat = getFieldValue('apiFormat') || 'openai';
-                if (apiFormat === 'openai') {
-                  return null;
-                }
-                return (
-                  <Collapse
-                    ghost
-                    items={[{
-                      key: '1',
-                      label: <span style={{ fontWeight: 700, color: '#8B5E34' }}>高级设置（Gemini / Vertex）</span>,
-                      style: { background: '#FFF7E6', borderRadius: 16, border: '1px dashed #FFD591', marginBottom: 24 },
-                      children: (
-                        <div>
-                            <Text style={{ fontWeight: 600, color: '#8B5E34', display: 'block', marginBottom: 8 }}>思考配置</Text>
-                            <Form.Item
-                              name="includeThoughts"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>启用思考</span>}
-                              valuePropName="checked"
-                              style={{ marginBottom: 8 }}
-                            >
-                              <Switch />
-                            </Form.Item>
-                            <Form.Item
-                              name="thinkingBudget"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>思考预算 (Tokens)</span>}
-                              style={{ marginBottom: 0 }}
-                            >
-                              <LazySliderInput min={0} max={8192} step={128} />
-                            </Form.Item>
-
-                            <Divider style={{ margin: '12px 0' }} />
-
-                            <Text style={{ fontWeight: 600, color: '#8B5E34', display: 'block', marginBottom: 8 }}>图像参数</Text>
-                            <Form.Item
-                              name="includeImageConfig"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>启用图像配置</span>}
-                              valuePropName="checked"
-                              style={{ marginBottom: 8 }}
-                            >
-                              <Switch />
-                            </Form.Item>
-                            <Form.Item
-                              name={['imageConfig', 'imageSize']}
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>分辨率</span>}
-                              style={{ marginBottom: 8 }}
-                            >
-                              <Radio.Group optionType="button" buttonStyle="solid">
-                                {IMAGE_SIZE_OPTIONS.map((size) => (
-                                  <Radio.Button key={size} value={size}>
-                                    {size}
-                                  </Radio.Button>
-                                ))}
-                              </Radio.Group>
-                            </Form.Item>
-                            <Form.Item
-                              name={['imageConfig', 'aspectRatio']}
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>比例</span>}
-                              style={{ marginBottom: 8 }}
-                            >
-                              <Select
-                                options={ASPECT_RATIO_OPTIONS.map((value) => ({ value, label: value }))}
-                              />
-                            </Form.Item>
-
-                            <Form.Item
-                              name="webpQuality"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>WebP 质量</span>}
-                              style={{ marginBottom: 8 }}
-                            >
-                              <LazySliderInput min={50} max={100} step={1} />
-                            </Form.Item>
-
-                            <Form.Item
-                              name="useResponseModalities"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>响应模态</span>}
-                              valuePropName="checked"
-                              extra="TEXT + IMAGE（官方端点可用）"
-                              style={{ marginBottom: 0 }}
-                            >
-                              <Switch />
-                            </Form.Item>
-
-                            <Divider style={{ margin: '12px 0' }} />
-
-                            <Text style={{ fontWeight: 600, color: '#8B5E34', display: 'block', marginBottom: 8 }}>安全设置</Text>
-                            <Form.Item
-                              name="includeSafetySettings"
-                              label={<span style={{ fontWeight: 600, color: '#665555' }}>启用安全设置</span>}
-                              valuePropName="checked"
-                              style={{ marginBottom: 8 }}
-                            >
-                              <Switch />
-                            </Form.Item>
-                            <Row gutter={12}>
-                              <Col span={12}>
-                                <Form.Item
-                                  name={['safety', 'HARM_CATEGORY_HARASSMENT']}
-                                  label={<span style={{ fontWeight: 600, color: '#665555' }}>骚扰内容</span>}
-                                  style={{ marginBottom: 8 }}
-                                >
-                                  <Select options={SAFETY_OPTIONS} />
-                                </Form.Item>
-                              </Col>
-                              <Col span={12}>
-                                <Form.Item
-                                  name={['safety', 'HARM_CATEGORY_HATE_SPEECH']}
-                                  label={<span style={{ fontWeight: 600, color: '#665555' }}>仇恨言论</span>}
-                                  style={{ marginBottom: 8 }}
-                                >
-                                  <Select options={SAFETY_OPTIONS} />
-                                </Form.Item>
-                              </Col>
-                              <Col span={12}>
-                                <Form.Item
-                                  name={['safety', 'HARM_CATEGORY_SEXUALLY_EXPLICIT']}
-                                  label={<span style={{ fontWeight: 600, color: '#665555' }}>色情内容</span>}
-                                  style={{ marginBottom: 8 }}
-                                >
-                                  <Select options={SAFETY_OPTIONS} />
-                                </Form.Item>
-                              </Col>
-                              <Col span={12}>
-                                <Form.Item
-                                  name={['safety', 'HARM_CATEGORY_DANGEROUS_CONTENT']}
-                                  label={<span style={{ fontWeight: 600, color: '#665555' }}>危险内容</span>}
-                                  style={{ marginBottom: 8 }}
-                                >
-                                  <Select options={SAFETY_OPTIONS} />
-                                </Form.Item>
-                              </Col>
-                              <Col span={12}>
-                                <Form.Item
-                                  name={['safety', 'HARM_CATEGORY_CIVIC_INTEGRITY']}
-                                  label={<span style={{ fontWeight: 600, color: '#665555' }}>公民诚信</span>}
-                                  style={{ marginBottom: 0 }}
-                                >
-                                  <Select options={SAFETY_OPTIONS} />
-                                </Form.Item>
-                              </Col>
-                            </Row>
-
-                            <Divider style={{ margin: '12px 0' }} />
-
-                            <Text style={{ fontWeight: 600, color: '#8B5E34', display: 'block', marginBottom: 8 }}>自定义 JSON</Text>
-                            <Form.Item
-                              name="customJson"
-                              extra="将合并到请求体中（仅 Gemini / Vertex）"
-                              style={{ marginBottom: 0 }}
-                            >
-                              <Input.TextArea
-                                rows={4}
-                                placeholder='{"generationConfig": {"topK": 40}}'
-                              />
-                            </Form.Item>
-                        </div>
-                      )
-                    }]}
-                  />
-                );
-              }}
-            </Form.Item>
-
-            <div style={{ background: '#F1F7FF', padding: '16px', borderRadius: 16, marginBottom: 24, border: '1px dashed #91C1FF' }}>
-              <Form.Item 
-                label={<span style={{ fontWeight: 700, color: '#665555' }}>后端模式</span>}
-                style={{ marginBottom: 8 }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-                  <Text type="secondary" style={{ fontSize: 13, flex: 1 }}>
-                    开启后将配置与任务缓存到服务器，支持多端同步
-                  </Text>
-                  <Switch
-                    checked={backendSwitchChecked}
-                    loading={backendSyncing}
-                    disabled={backendAuthLoading}
-                    onChange={(checked) => {
-                      if (checked) {
-                        if (!backendMode) {
-                          handleBackendEnable();
-                        }
-                      } else {
-                        if (backendMode) {
-                          handleBackendDisable();
-                        } else {
-                          handleBackendAuthCancel();
-                        }
-                      }
-                    }}
-                  />
-                </div>
-              </Form.Item>
-              <div style={{ marginTop: 16 }}>
-                <Text type="secondary" style={{ fontSize: 12, color: '#6B7280', lineHeight: 1.5, display: 'block' }}>
-                  需要在服务端 .env 中设置 BACKEND_PASSWORD。开启后生图请求将由服务器执行并自动缓存。
-                </Text>
-              </div>
-              <div className={`password-collapse-container ${backendAuthPending && !backendMode ? 'open' : ''}`}>
-                <div className="password-content-wrapper">
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Text type="secondary" style={{ fontSize: 12, color: '#6B7280' }}>
-                      请输入 .env 中配置的 BACKEND_PASSWORD。
-                    </Text>
-                    <Input.Password
-                      size="large"
-                      value={backendPassword}
-                      placeholder="后端密码"
-                      prefix={<KeyOutlined style={{ color: '#FF9EB5', fontSize: 18 }} />}
-                      onChange={(e) => setBackendPassword(e.target.value)}
-                      onPressEnter={() => void handleBackendAuthConfirm()}
-                    />
-                    <Space size={8}>
-                      <Button
-                        size="small"
-                        onClick={() => void handleBackendAuthConfirm()}
-                        loading={backendAuthLoading}
-                        type="primary"
-                      >
-                        验证
-                      </Button>
-                      <Button size="small" type="text" onClick={handleBackendAuthCancel}>
-                        取消
-                      </Button>
-                    </Space>
-                  </Space>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 24, padding: 16, background: '#FFF8E1', borderRadius: 16, border: '1px dashed #FFC107' }}>
-              <Space align="start">
-                <ThunderboltFilled style={{ color: '#FFC107', marginTop: 4, fontSize: 16 }} />
-                <Text type="secondary" style={{ fontSize: 13, color: '#8D6E63', lineHeight: 1.5 }}>
-                  设置将自动应用于所有活动任务窗口。请确保您的 API 密钥有足够的配额。
-                </Text>
-              </Space>
-            </div>
-          </Form>
-        </Drawer>
+          onConfigChange={handleConfigChange}
+          models={models}
+          loadingModels={loadingModels}
+          fetchModels={fetchModels}
+          backendSwitchChecked={backendSwitchChecked}
+          backendSyncing={backendSyncing}
+          backendAuthLoading={backendAuthLoading}
+          backendMode={backendMode}
+          backendAuthPending={backendAuthPending}
+          backendPassword={backendPassword}
+          onBackendPasswordChange={setBackendPassword}
+          onBackendEnable={handleBackendEnable}
+          onBackendDisable={handleBackendDisable}
+          onBackendAuthCancel={handleBackendAuthCancel}
+          onBackendAuthConfirm={handleBackendAuthConfirm}
+        />
 
       </Layout>
     </ConfigProvider>
@@ -1987,3 +1310,4 @@ function App() {
 }
 
 export default App;
+

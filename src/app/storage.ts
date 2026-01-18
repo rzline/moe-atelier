@@ -4,6 +4,7 @@ import type { CollectionItem } from '../types/collection';
 import type { GlobalStats } from '../types/stats';
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '../utils/storage';
 import { openImageDb, IMAGE_STORE_NAME } from '../utils/imageDb';
+import { buildPromptKey } from '../utils/prompt';
 
 export const STORAGE_KEYS = {
   config: 'moe-image-config',
@@ -432,13 +433,6 @@ const isEphemeralImage = (value?: string) =>
 
 const shouldStripInlineImage = (item: CollectionItem) =>
   Boolean(item.localKey && isEphemeralImage(item.image));
-
-const normalizePrompt = (prompt: string) => prompt.trim().replace(/\s+/g, ' ');
-
-const buildPromptKey = (prompt: string) => {
-  const normalized = normalizePrompt(prompt);
-  return normalized ? normalized.toLowerCase() : '__empty__';
-};
 
 const isUploadCollectionKey = (key?: string) =>
   Boolean(key && key.startsWith('collection:upload:'));
