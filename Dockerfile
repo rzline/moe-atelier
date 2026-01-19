@@ -13,12 +13,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=5173
 
-COPY package.json package-lock.json ./
+COPY --from=build /app ./
+
 RUN npm ci --omit=dev
-
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/server.mjs ./server.mjs
-
 RUN mkdir -p saved-images server-data
 EXPOSE 5173
 
