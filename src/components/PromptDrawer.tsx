@@ -12,7 +12,8 @@ import {
   FireFilled, LeftOutlined, RightOutlined,
   CopyOutlined, CompassFilled, CloudUploadOutlined,
   EyeInvisibleOutlined, ArrowLeftOutlined,
-  InfoCircleFilled
+  InfoCircleFilled,
+  CloudSyncOutlined
 } from '@ant-design/icons';
 import type { PromptData, PromptItem } from '../types/prompt';
 import { safeStorageGet, safeStorageSet } from '../utils/storage';
@@ -615,6 +616,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
   // 移动端筛选抽屉
   const [mobileFilterVisible, setMobileFilterVisible] = useState(false);
   const [mobileSearchVisible, setMobileSearchVisible] = useState(false);
+  const [mobileSourceVisible, setMobileSourceVisible] = useState(false);
   const [contributorMobileFilterVisible, setContributorMobileFilterVisible] = useState(false);
   const [isFabVisible, setIsFabVisible] = useState(true);
 
@@ -1372,9 +1374,21 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                 </Space>
                 <Space size={8}>
                   <Button
+                    icon={<CloudSyncOutlined style={{ color: mobileSourceVisible ? COLORS.primary : mobileInactiveIconColor, fontSize: 18 }} />}
+                    shape="circle"
+                    onClick={() => {
+                      setMobileSourceVisible((prev) => !prev);
+                      setMobileSearchVisible(false);
+                    }}
+                    className={`mobile-icon-btn circle-icon-btn${mobileSourceVisible ? ' is-active' : ''}`}
+                  />
+                  <Button
                     icon={<SearchIcon color={mobileSearchVisible ? COLORS.primary : mobileInactiveIconColor} />}
                     shape="circle"
-                    onClick={() => setMobileSearchVisible((prev) => !prev)}
+                    onClick={() => {
+                      setMobileSearchVisible((prev) => !prev);
+                      setMobileSourceVisible(false);
+                    }}
                     className={`mobile-icon-btn circle-icon-btn${mobileSearchVisible ? ' is-active' : ''}`}
                   />
                   <Button
@@ -1386,30 +1400,71 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                 </Space>
               </div>
               <div style={{
-                height: mobileSearchVisible ? 46 : 0,
-                opacity: mobileSearchVisible ? 1 : 0,
-                marginTop: mobileSearchVisible ? 12 : 0,
+                height: mobileSearchVisible ? 46 : (mobileSourceVisible ? (isBuiltInSource ? 46 : 94) : 0),
+                opacity: (mobileSearchVisible || mobileSourceVisible) ? 1 : 0,
+                marginTop: (mobileSearchVisible || mobileSourceVisible) ? 12 : 0,
                 overflow: 'hidden',
                 transition: 'all 0.3s ease',
                 display: 'flex',
-                alignItems: 'center',
+                flexDirection: 'column',
+                justifyContent: mobileSourceVisible ? 'flex-start' : 'center',
                 padding: '0 4px'
               }}>
-                <Input 
-                  size="large"
-                  key={mobileSearchVisible ? 'visible' : 'hidden'}
-                  autoFocus={mobileSearchVisible}
-                  prefix={
-                    <span style={{ display: 'flex', alignItems: 'center' }}>
-                      <SearchIcon color={COLORS.primary} />
-                    </span>
-                  }
-                  placeholder="搜索提示词..." 
-                  value={searchText}
-                  onChange={(e) => setSearchText(e.target.value)}
-                  className="custom-search-input"
-                  style={{ width: '100%' }}
-                />
+                {mobileSearchVisible && (
+                  <Input 
+                    size="large"
+                    key="search-input"
+                    autoFocus
+                    prefix={
+                      <span style={{ display: 'flex', alignItems: 'center' }}>
+                        <SearchIcon color={COLORS.primary} />
+                      </span>
+                    }
+                    placeholder="搜索提示词..." 
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                    className="custom-search-input"
+                    style={{ width: '100%' }}
+                  />
+                )}
+                {mobileSourceVisible && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                       <Select
+                        size="large"
+                        style={{ flex: 1 }}
+                        value={isBuiltInSource ? sourceUrl : 'custom'}
+                        onChange={(value) => {
+                          if (value === 'custom') {
+                            setSourceUrl('');
+                          } else {
+                            setSourceUrl(value);
+                          }
+                        }}
+                        options={[
+                          ...BUILTIN_SOURCES,
+                          { label: '自定义源', value: 'custom' }
+                        ]}
+                      />
+                      <Button 
+                        size="large"
+                        className="prompt-refresh-btn" 
+                        shape="circle" 
+                        icon={<ReloadOutlined spin={loading} />} 
+                        onClick={fetchData} 
+                      />
+                    </div>
+                    {!isBuiltInSource && (
+                       <Input 
+                          size="large"
+                          style={{ borderRadius: 12 }} 
+                          value={sourceUrl} 
+                          onChange={(e) => setSourceUrl(e.target.value)}
+                          placeholder="数据源 URL"
+                        />
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ) : (
