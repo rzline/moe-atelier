@@ -73,6 +73,10 @@ const CollectionGroupCard: React.FC<{
   
   const activeItem = group.items[activeIndex] || group.items[0];
   const activeImage = activeItem?.resolvedImage;
+  const activeGeneratedIndex = activeItem
+    ? generatedItems.findIndex((item) => item.id === activeItem.id)
+    : -1;
+  const showPager = generatedCount > 1 && activeGeneratedIndex >= 0;
   const downloadName = `collection-${activeItem?.timestamp || Date.now()}.png`;
   
   const allThumbnails = group.items;
@@ -329,7 +333,7 @@ const CollectionGroupCard: React.FC<{
         </div>
 
         {/* 底部页码指示器 */}
-        {total > 1 && (
+        {showPager && (
           <div style={{
             position: 'absolute',
             bottom: 8,
@@ -342,7 +346,7 @@ const CollectionGroupCard: React.FC<{
             fontSize: 11,
             zIndex: 2,
           }}>
-            {activeIndex + 1} / {total}
+            {activeGeneratedIndex + 1} / {generatedCount}
           </div>
         )}
       </div>
@@ -543,6 +547,10 @@ const CollectionBox: React.FC<CollectionBoxProps> = ({
     hasOpenedRef.current = true;
   }
   const hasOpened = hasOpenedRef.current;
+  const collectedGeneratedCount = useMemo(
+    () => collectedItems.filter((item) => !isUploadCollectionItem(item)).length,
+    [collectedItems],
+  );
 
   const getImageDb = () => {
     if (typeof indexedDB === 'undefined') return null;
@@ -741,7 +749,7 @@ const CollectionBox: React.FC<CollectionBoxProps> = ({
                 color: COLORS.primary,
                 fontWeight: 600
               }}>
-                {collectedItems.length}
+                {collectedGeneratedCount}
               </span>
             </Space>
             {collectedItems.length > 0 && (

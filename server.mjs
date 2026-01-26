@@ -167,6 +167,57 @@ const scheduleOrphanCleanup = () => {
   }, ORPHAN_CLEANUP_DELAY_MS)
 }
 
+const buildResultCollectionKey = (subTaskId, endTime) =>
+  `collection:result:${subTaskId}:${endTime}`
+
+const buildUploadCollectionKey = (taskId, uploadKey) =>
+  `collection:upload:${taskId}:${uploadKey}`
+
+const buildUploadSignature = (upload) => {
+  const name = typeof upload?.name === 'string' ? upload.name : ''
+  const size = typeof upload?.size === 'number' ? upload.size : undefined
+  const lastModified =
+    typeof upload?.lastModified === 'number' ? upload.lastModified : undefined
+  const type = typeof upload?.type === 'string' ? upload.type : ''
+  if (!name || typeof size !== 'number' || typeof lastModified !== 'number') {
+    return ''
+  }
+  return `${name}:${size}:${lastModified}:${type}`
+}
+
+const mergeCollectionItems = (existing, incoming) => {
+  const byId = new Map(existing.map((item) => [item.id, item]))
+  const seen = new Set()
+  const next = []
+  incoming.forEach((item) => {
+    if (!item?.id || seen.has(item.id)) return
+    const merged = byId.has(item.id) ? { ...byId.get(item.id), ...item, id: item.id } : item
+    next.push(merged)
+    seen.add(item.id)
+  })
+  existing.forEach((item) => {
+    if (!item?.id || seen.has(item.id)) return
+    next.push(item)
+    seen.add(item.id)
+  })
+  return next
+}
+
+let backendCollectionQueue = Promise.resolve()
+
+const appendBackendCollectionItems = (items) => {
+  if (!Array.isArray(items) || items.length === 0) return
+  backendCollectionQueue = backendCollectionQueue
+    .then(async () => {
+      const existing = await loadBackendCollection()
+      const next = mergeCollectionItems(existing, items)
+      await saveBackendCollection(next)
+    })
+    .catch((err) => {
+      console.warn('后端收藏写入失败:', err)
+    })
+}
+
 const parseDataUrl = (dataUrl = '') => {
   const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
   if (!match) return null
@@ -763,6 +814,8 @@ const runSubTask = async (taskId, subTaskId, options = {}) => {
     activeControllers.delete(subTaskId)
     return
   }
+  const requestPrompt = typeof taskState.prompt === 'string' ? taskState.prompt : ''
+  const requestUploads = Array.isArray(taskState.uploads) ? taskState.uploads : []
 
   const resultIndex = taskState.results.findIndex((item) => item.id === subTaskId)
   if (resultIndex === -1) {
@@ -795,6 +848,7 @@ const runSubTask = async (taskId, subTaskId, options = {}) => {
 
   try {
     const backendState = await loadBackendState()
+    const shouldCollect = Boolean(backendState?.config?.enableCollection)
     const messages = await buildMessagesForTask(taskState)
     const imageUrl = await requestImageUrl(backendState.config, messages, controller.signal)
     if (!imageUrl) {
@@ -826,6 +880,49 @@ const runSubTask = async (taskId, subTaskId, options = {}) => {
     freshState.stats = updateStats(freshState.stats, 'success', duration)
     await saveTaskState(taskId, freshState)
     await updateGlobalStats('success', duration)
+    if (shouldCollect) {
+      const items = []
+      const timestamp = endTime
+      const taskKey = typeof taskId === 'string' ? taskId : ''
+      const prompt = requestPrompt || ''
+      if (saved?.fileName) {
+        items.push({
+          id: buildResultCollectionKey(subTaskId, timestamp),
+          prompt,
+          timestamp,
+          taskId: taskKey,
+          localKey: path.basename(String(saved.fileName)),
+        })
+      }
+      if (requestUploads.length > 0) {
+        requestUploads.forEach((upload) => {
+          const uploadKey =
+            typeof upload?.uid === 'string' && upload.uid
+              ? upload.uid
+              : typeof upload?.localKey === 'string'
+                ? upload.localKey
+                : ''
+          const uploadLocalKey =
+            typeof upload?.localKey === 'string' && upload.localKey
+              ? path.basename(upload.localKey)
+              : ''
+          if (!uploadKey || !uploadLocalKey) return
+          const signature =
+            typeof upload?.sourceSignature === 'string' && upload.sourceSignature
+              ? upload.sourceSignature
+              : buildUploadSignature(upload)
+          items.push({
+            id: buildUploadCollectionKey(taskKey, uploadKey),
+            prompt,
+            timestamp,
+            taskId: taskKey,
+            localKey: uploadLocalKey,
+            sourceSignature: signature || undefined,
+          })
+        })
+      }
+      appendBackendCollectionItems(items)
+    }
   } catch (err) {
     if (controller.signal.aborted) {
       return

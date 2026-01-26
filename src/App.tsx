@@ -424,7 +424,7 @@ function App() {
   }, [collectedItems, backendMode]);
 
   React.useEffect(() => {
-    if (collectionCountRef.current > 0 && collectedItems.length === 0) {
+    if (collectionCountRef.current > collectedItems.length) {
       setCollectionRevision((prev) => prev + 1);
     }
     collectionCountRef.current = collectedItems.length;

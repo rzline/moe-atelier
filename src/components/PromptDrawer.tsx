@@ -550,20 +550,33 @@ const normalizePromptManagerData = (payload: { data?: Record<string, unknown>[] 
   };
 };
 
-const parsePromptTimestamp = (id: string) => {
-  if (!id) return null;
-  if (/^\d{13}$/.test(id)) return parseInt(id, 10);
-  if (id.startsWith('imported-') || id.startsWith('u-')) {
-    const part = id.split('-')[1];
-    if (/^\d{13}$/.test(part)) return parseInt(part, 10);
-  }
-  return null;
+const parsePromptTimestamp = (text: string) => {
+  if (!text) return null;
+  const match = text.match(/(?:^|[\s/_\-=])(\d{13}|\d{10})(?=[\s/_\-.?&]|$)/);
+  if (!match) return null;
+  const raw = match[1];
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return raw.length === 10 ? value * 1000 : value;
 };
 
-const formatPromptTime = (id: string, createdAt?: number) => {
-  const timestamp = typeof createdAt === 'number' && !Number.isNaN(createdAt)
-    ? createdAt
-    : parsePromptTimestamp(id);
+const getPromptTimestamp = (prompt: Pick<PromptItem, 'id' | 'createdAt' | 'images'>) => {
+  if (prompt.images?.length) {
+    let latest = 0;
+    for (const image of prompt.images) {
+      const ts = parsePromptTimestamp(image);
+      if (ts && ts > latest) latest = ts;
+    }
+    if (latest) return latest;
+  }
+  if (typeof prompt.createdAt === 'number' && Number.isFinite(prompt.createdAt)) {
+    return prompt.createdAt < 1e12 ? prompt.createdAt * 1000 : prompt.createdAt;
+  }
+  return parsePromptTimestamp(prompt.id);
+};
+
+const formatPromptTime = (prompt: Pick<PromptItem, 'id' | 'createdAt' | 'images'>) => {
+  const timestamp = getPromptTimestamp(prompt);
   if (!timestamp) return '';
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return '';
@@ -821,11 +834,11 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
     return () => container.removeEventListener('scroll', handleScroll);
   }, [loading, data, currentPage, activeTab]);
 
-  const isNewItem = (id: string, createdAt?: number) => {
-    const timestamp = typeof createdAt === 'number' && !Number.isNaN(createdAt)
-      ? createdAt
-      : parsePromptTimestamp(id);
-    return timestamp ? Date.now() - timestamp <= NEW_WINDOW_MS : false;
+  const isNewItem = (prompt: Pick<PromptItem, 'id' | 'createdAt' | 'images'>) => {
+    const timestamp = getPromptTimestamp(prompt);
+    if (!timestamp) return false;
+    const delta = Date.now() - timestamp;
+    return delta >= 0 && delta <= NEW_WINDOW_MS;
   };
 
   const toggleFavorite = (e: React.MouseEvent, id: string) => {
@@ -899,9 +912,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
     );
   }, [data]);
 
-  const newPrompts = useMemo(() => {
-    return allPrompts.filter(p => isNewItem(p.id, p.createdAt));
-  }, [allPrompts]);
+  const newPrompts = useMemo(() => allPrompts.filter(isNewItem), [allPrompts]);
 
   const filteredPrompts = useMemo(() => {
     let result = allPrompts;
@@ -910,7 +921,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
     if (activeTab === 'favorites') {
       result = result.filter(p => favorites.includes(p.id));
     } else if (activeTab === 'new') {
-      result = result.filter(p => isNewItem(p.id, p.createdAt));
+      result = result.filter(isNewItem);
     } else if (activeTab !== 'all') {
       result = result.filter(p => p.sectionId === activeTab);
     }
@@ -936,8 +947,8 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
     return result
       .map((prompt, index) => ({ prompt, index }))
       .sort((a, b) => {
-        const aNew = isNewItem(a.prompt.id, a.prompt.createdAt);
-        const bNew = isNewItem(b.prompt.id, b.prompt.createdAt);
+        const aNew = isNewItem(a.prompt);
+        const bNew = isNewItem(b.prompt);
         if (aNew !== bNew) return aNew ? -1 : 1;
         return a.index - b.index;
       })
@@ -956,7 +967,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
     if (activeTab === 'favorites') {
       contextPrompts = contextPrompts.filter(p => favorites.includes(p.id));
     } else if (activeTab === 'new') {
-      contextPrompts = contextPrompts.filter(p => isNewItem(p.id, p.createdAt));
+      contextPrompts = contextPrompts.filter(isNewItem);
     } else if (activeTab !== 'all') {
       contextPrompts = contextPrompts.filter(p => p.sectionId === activeTab);
     }
@@ -1046,7 +1057,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
 
   const previewTimeLabel = useMemo(() => {
     if (!previewPrompt) return '';
-    return formatPromptTime(previewPrompt.id, previewPrompt.createdAt);
+    return formatPromptTime(previewPrompt);
   }, [previewPrompt]);
 
   // Layout Detection
@@ -1583,14 +1594,14 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                       prompt={prompt}
                       favorites={favorites}
                       revealedImages={revealedImages}
-                      isNew={isNewItem(prompt.id, prompt.createdAt)}
+                      isNew={isNewItem(prompt)}
                       isNSFW={isNSFW}
                       onToggleFavorite={toggleFavorite}
                       onToggleReveal={toggleReveal}
                       onClick={openPreview}
                       onContributorClick={handleContributorClick}
                       showSectionTag={!isPromptManagerSource}
-                      timeLabel={formatPromptTime(prompt.id, prompt.createdAt)}
+                      timeLabel={formatPromptTime(prompt)}
                     />
                   ))}
                 </div>
@@ -1778,7 +1789,7 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', color: COLORS.textLight }}>
                           <FireFilled style={{ marginRight: 6, color: COLORS.new }} />
-                          <span style={{ fontWeight: 600, fontSize: 16 }}>{contributorPrompts.reduce((acc, cur) => acc + (isNewItem(cur.id, cur.createdAt) ? 1 : 0), 0)}</span>
+                          <span style={{ fontWeight: 600, fontSize: 16 }}>{contributorPrompts.reduce((acc, cur) => acc + (isNewItem(cur) ? 1 : 0), 0)}</span>
                           <span style={{ fontSize: 14, marginLeft: 4 }}>近期更新</span>
                         </div>
                       </Space>
@@ -1830,14 +1841,14 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                             prompt={prompt}
                             favorites={favorites}
                             revealedImages={revealedImages}
-                            isNew={isNewItem(prompt.id, prompt.createdAt)}
+                            isNew={isNewItem(prompt)}
                             isNSFW={isNSFW}
                             onToggleFavorite={toggleFavorite}
                             onToggleReveal={toggleReveal}
                             onClick={openPreview}
                             onContributorClick={() => {}} // No-op in profile
                             showSectionTag={!isPromptManagerSource}
-                            timeLabel={formatPromptTime(prompt.id, prompt.createdAt)}
+                            timeLabel={formatPromptTime(prompt)}
                           />
                         ))}
                       </div>
@@ -1926,45 +1937,46 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
               justifyContent: 'center',
               position: 'relative',
               overflow: 'hidden',
-              height: isMobile ? '40vh' : (imageAspectRatio === 'landscape' ? '45vh' : '100%'),
+              height: (isMobile || imageAspectRatio === 'landscape') ? 'auto' : '100%',
+              maxHeight: (isMobile || imageAspectRatio === 'landscape') ? '60vh' : 'unset',
               width: (isMobile || imageAspectRatio === 'landscape') ? '100%' : '55%'
             }}>
               {currentPreviewData.images.length > 0 ? (
                 <>
-                  <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                  <div style={{ width: '100%', flex: (isMobile || imageAspectRatio === 'landscape') ? '0 0 auto' : 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
                     <Image
                       src={currentPreviewData.images[previewImageIndex]}
-                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                      style={{ 
+                        width: '100%', 
+                        height: (isMobile || imageAspectRatio === 'landscape') ? 'auto' : '100%', 
+                        maxHeight: (isMobile || imageAspectRatio === 'landscape') ? '60vh' : '100%',
+                        objectFit: 'contain' 
+                      }}
                       width="100%"
-                      height="100%"
                       preview={isMobile ? { maskClassName: 'mobile-hidden-mask' } : undefined}
                     />
-                    {previewTimeLabel && (
-                      <div style={{ 
-                        position: 'absolute',
-                        left: 12,
-                        bottom: 12,
-                        background: 'rgba(0,0,0,0.55)',
-                        borderRadius: 10,
-                        padding: '2px 8px',
-                        color: '#fff',
-                        fontSize: 12,
-                        zIndex: 10
-                      }}>
-                        提交时间 {previewTimeLabel}
-                      </div>
-                    )}
                   </div>
                   {/* Image Navigation */}
                   {currentPreviewData.images.length > 1 && (
-                    <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: '12px 0 16px' }}>
+                    <div style={{ 
+                      position: 'absolute',
+                      bottom: 20,
+                      left: 0,
+                      width: '100%', 
+                      display: 'flex', 
+                      justifyContent: 'center',
+                      zIndex: 10,
+                      pointerEvents: 'none'
+                    }}>
                       <div style={{ 
                         display: 'flex', 
                         alignItems: 'center', 
                         gap: 12, 
-                        background: 'rgba(0,0,0,0.35)', 
+                        background: 'rgba(0,0,0,0.5)', 
+                        backdropFilter: 'blur(4px)',
                         borderRadius: 18, 
-                        padding: '6px 12px'
+                        padding: '6px 12px',
+                        pointerEvents: 'auto'
                       }}>
                         <div 
                           style={{ 
@@ -2016,22 +2028,29 @@ const PromptDrawer: React.FC<PromptDrawerProps> = ({ visible, onClose, onCreateT
                     <Tag color="volcano" style={{ borderRadius: 8 }}>{previewPrompt.sectionTitle}</Tag>
                   )}
                   {favorites.includes(previewPrompt.id) && <Tag color="gold" icon={<StarFilled />} style={{ borderRadius: 8 }}>已收藏</Tag>}
-                  {isNewItem(previewPrompt.id, previewPrompt.createdAt) && <Tag color={COLORS.new} style={{ borderRadius: 8 }}>NEW</Tag>}
+                  {isNewItem(previewPrompt) && <Tag color={COLORS.new} style={{ borderRadius: 8 }}>NEW</Tag>}
                 </Space>
                 <Title level={isMobile ? 4 : 3} style={{ margin: 0, color: COLORS.text }}>{previewPrompt.title}</Title>
-                <Space style={{ marginTop: 8 }}>
-                  <Avatar size="small" icon={<UserOutlined />} style={{ backgroundColor: COLORS.secondary }} />
-                  <div 
-                    onClick={(e) => handleContributorClick(e, currentPreviewData.contributor)}
-                    style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    className="contributor-link"
-                  >
-                    <Text type="secondary" style={{ transition: 'color 0.2s' }}>
-                      {currentPreviewData.contributor || '匿名贡献者'}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+                  <Space>
+                    <Avatar size="small" icon={<UserOutlined />} style={{ backgroundColor: COLORS.secondary }} />
+                    <div 
+                      onClick={(e) => handleContributorClick(e, currentPreviewData.contributor)}
+                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                      className="contributor-link"
+                    >
+                      <Text type="secondary" style={{ transition: 'color 0.2s' }}>
+                        {currentPreviewData.contributor || '匿名贡献者'}
+                      </Text>
+                      <RightOutlined style={{ fontSize: 10, marginLeft: 4, color: COLORS.textLight }} />
+                    </div>
+                  </Space>
+                  {previewTimeLabel && (
+                    <Text type="secondary" style={{ fontSize: 12, color: COLORS.textLight }}>
+                      {previewTimeLabel}
                     </Text>
-                    <RightOutlined style={{ fontSize: 10, marginLeft: 4, color: COLORS.textLight }} />
-                  </div>
-                </Space>
+                  )}
+                </div>
               </div>
 
               {/* Variants Tabs */}
